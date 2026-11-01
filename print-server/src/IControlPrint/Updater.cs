@@ -10,7 +10,8 @@ namespace IControlPrint;
 /// </summary>
 public sealed class Updater(ILogger<Updater> log)
 {
-    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(5) };
+    const string AllowedHost = "download.icontrolfood.com.br";
+    static readonly HttpClient Http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(5) };
     string _tried = File.Exists(TriedFile) ? File.ReadAllText(TriedFile).Trim() : "";
     static string TriedFile => Path.Combine(Paths.Updates, "tentada.txt");
 
@@ -21,7 +22,11 @@ public sealed class Updater(ILogger<Updater> log)
         var sha = (rel["sha256"]?.GetValue<string>() ?? "").Trim().ToLowerInvariant();
         if (!Version.TryParse(version, out var remote) || !Version.TryParse(AppInfo.Version, out var local) || remote <= local) return;
         if (_tried == version) return; // já tentou esta versão: não fica em loop se a instalação falhar
-        if (!url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) { log.LogWarning("Atualização {V} ignorada: URL não é https", version); return; }
+        // só do nosso domínio e sempre com SHA-256
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
+            || !uri.Host.Equals(AllowedHost, StringComparison.OrdinalIgnoreCase) || !uri.AbsolutePath.StartsWith("/print/"))
+        { log.LogWarning("Atualização {V} recusada: endereço fora de {Host} ({Url})", version, AllowedHost, url); return; }
+        if (sha.Length != 64) { log.LogWarning("Atualização {V} recusada: sem SHA-256", version); return; }
 
         _tried = version;
         File.WriteAllText(TriedFile, version);
@@ -31,7 +36,6 @@ public sealed class Updater(ILogger<Updater> log)
             var file = Path.Combine(Paths.Updates, $"iControlPrint-Setup-{version}.exe");
             await using (var s = await Http.GetStreamAsync(url, ct))
             await using (var f = File.Create(file)) await s.CopyToAsync(f, ct);
-            if (sha.Length > 0)
             {
                 await using var f = File.OpenRead(file);
                 var got = Convert.ToHexString(await SHA256.HashDataAsync(f, ct)).ToLowerInvariant();
