@@ -29,6 +29,8 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName={#MyAppName}
+UninstallDisplayIcon={app}\{#MyExe}
+SetupIconFile=..\src\IControlPrint\Assets\setup.ico
 CloseApplications=no
 
 [Languages]
@@ -39,6 +41,14 @@ Source: "{#PublishDir}\{#MyExe}"; DestDir: "{app}"; Flags: ignoreversion
 ; mesmo executável como Monitor da bandeja (o Inno guarda uma cópia só). Em atualização silenciosa com o Monitor aberto,
 ; o arquivo é trocado no próximo reinício do Windows.
 Source: "{#PublishDir}\{#MyExe}"; DestDir: "{app}"; DestName: "{#MyMonitor}"; Flags: ignoreversion restartreplace
+
+[Dirs]
+; PDFs das impressoras de arquivo (Microsoft Print to PDF/XPS) no modo Driver
+Name: "C:\iControlPrint\PDF"; Permissions: users-modify
+
+[Icons]
+Name: "{autoprograms}\iControl Print Monitor"; Filename: "{app}\{#MyMonitor}"; Parameters: "--monitor --show"; Comment: "Situação da impressão, ilhas e testes"
+Name: "{autoprograms}\Pasta dos PDFs do iControl Print"; Filename: "C:\iControlPrint\PDF"
 
 [Registry]
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "iControlPrintMonitor"; ValueData: """{app}\{#MyMonitor}"" --monitor"; Flags: uninsdeletevalue
