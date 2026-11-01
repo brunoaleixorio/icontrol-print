@@ -29,12 +29,28 @@ public sealed class TokenStore
         var tmp = Paths.Token + ".tmp";
         File.WriteAllBytes(tmp, enc);
         File.Move(tmp, Paths.Token, true);
+        Restrict(Paths.Token);
     }
 
     public void Update(Func<Pairing, Pairing> change)
     {
         var p = Load();
         if (p is not null) Save(change(p));
+    }
+
+    // DPAPI LocalMachine: qualquer usuário da máquina decifraria; por isso o arquivo fica só para SYSTEM e Administradores
+    static void Restrict(string path)
+    {
+        try
+        {
+            var sec = new System.Security.AccessControl.FileSecurity();
+            sec.SetAccessRuleProtection(true, false);
+            foreach (var sid in new[] { System.Security.Principal.WellKnownSidType.LocalSystemSid, System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid })
+                sec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(new System.Security.Principal.SecurityIdentifier(sid, null),
+                    System.Security.AccessControl.FileSystemRights.FullControl, System.Security.AccessControl.AccessControlType.Allow));
+            new FileInfo(path).SetAccessControl(sec);
+        }
+        catch { /* sem permissão para mudar ACL: segue com a herança da pasta */ }
     }
 
     public void Delete() { if (File.Exists(Paths.Token)) File.Delete(Paths.Token); }

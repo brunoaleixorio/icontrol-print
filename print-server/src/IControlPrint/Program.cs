@@ -12,7 +12,18 @@ using Serilog;
 //   --unpair                         desfaz o pareamento
 //   --status --out arquivo           PAREADO|empresa|cnpj  ou  NAO_PAREADO
 //   --test "Impressora"              imprime uma página de teste local
+//   --monitor [--show]               ícone na bandeja (usuário logado), conversa com o serviço pelo pipe local
 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
+if (args.Contains("--monitor"))
+{
+    // WinForms precisa de thread STA; o Monitor não grava log em ProgramData (usuário comum não tem permissão)
+    var t = new Thread(() => TrayMonitor.Run(args.Contains("--show")));
+    t.SetApartmentState(ApartmentState.STA);
+    t.Start(); t.Join();
+    return 0;
+}
+
 Paths.EnsureCreated();
 
 Log.Logger = new LoggerConfiguration()
@@ -41,7 +52,10 @@ try
     builder.Services.AddHttpClient<SupabaseApi>(c => c.Timeout = TimeSpan.FromSeconds(20));
     builder.Services.AddSingleton<JobPrinter>();
     builder.Services.AddSingleton<Updater>();
-    builder.Services.AddHostedService<Worker>();
+    builder.Services.AddSingleton<ServiceState>();
+    builder.Services.AddSingleton<Worker>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<Worker>());
+    builder.Services.AddHostedService<PipeServer>();
     Log.Information("iControl Print {Version} iniciando", AppInfo.Version);
     await builder.Build().RunAsync();
     return 0;
