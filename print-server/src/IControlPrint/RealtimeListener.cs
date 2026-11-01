@@ -10,7 +10,7 @@ namespace IControlPrint;
 /// </summary>
 public sealed class RealtimeListener(AppSettings cfg, ILogger log)
 {
-    public async Task RunAsync(Func<string> channel, Action onJob, CancellationToken ct)
+    public async Task RunAsync(Func<string> channel, Action<string> onEvent, CancellationToken ct)
     {
         var delay = 2;
         while (!ct.IsCancellationRequested)
@@ -54,7 +54,8 @@ public sealed class RealtimeListener(AppSettings cfg, ILogger log)
                     {
                         var node = JsonNode.Parse(msg);
                         var ev = node?["event"]?.GetValue<string>();
-                        if (ev == "broadcast") onJob();
+                        // "job" = imprimir agora; "config" = ilhas ou impressora geral mudaram no sistema
+                        if (ev == "broadcast") onEvent(node?["payload"]?["event"]?.GetValue<string>() ?? "job");
                         else if (ev == "phx_reply" && node?["payload"]?["status"]?.GetValue<string>() == "error")
                             log.LogWarning("Realtime recusou a inscrição: {Msg}", msg);
                     }

@@ -20,6 +20,10 @@ public sealed class ServiceState
     public string LatestVersion { get; set; } = "";
     public JsonArray Printers { get; set; } = [];
     public DateTime? LastPrintOk { get; set; }
+    public string LastFile { get; set; } = "";
+    /// <summary>Ilhas e impressora geral da empresa (print_server_islands), para o Monitor.</summary>
+    public JsonObject Config { get; set; } = new();
+    public DateTime? ConfigAt { get; set; }
 
     public bool Online => LastHeartbeatOk is { } t && DateTime.UtcNow - t < TimeSpan.FromSeconds(90);
 
@@ -54,6 +58,10 @@ public sealed class ServiceState
                 ["latest_version"] = LatestVersion,
                 ["last_print_ok"] = LastPrintOk?.ToLocalTime().ToString("dd/MM HH:mm:ss") ?? "",
                 ["printers"] = Printers.DeepClone(),
+                ["last_file"] = LastFile,
+                ["pdf_folder"] = DriverPrinter.PdfFolder,
+                ["config"] = Config.DeepClone(),
+                ["config_at"] = ConfigAt?.ToLocalTime().ToString("dd/MM HH:mm:ss") ?? "",
                 ["errors"] = new JsonArray(_errors.Select(e => (JsonNode)e.DeepClone()).ToArray()),
             };
         }

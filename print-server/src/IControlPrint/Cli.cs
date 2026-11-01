@@ -48,13 +48,13 @@ public static class Cli
                 return p is null ? 3 : 0;
             }
             case "--printers":
-                WriteOut(args, Winspool.List().ToJsonString());
+                WriteOut(args, Printers.List().ToJsonString());
                 return 0;
             case "--test":
             {
                 var printer = Arg("--test");
                 var job = EscPos.TestJob(printer);
-                RawPrinter.Send(printer, EscPos.Build(job), "iControl teste");
+                new JobPrinter(Microsoft.Extensions.Logging.Abstractions.NullLogger<JobPrinter>.Instance, cfg, new ServiceState()).PrintOne(job, printer, "iControl teste");
                 WriteOut(args, "OK");
                 return 0;
             }

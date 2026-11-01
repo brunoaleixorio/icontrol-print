@@ -52,6 +52,13 @@ public sealed class SupabaseApi
         return arr.Where(n => n is not null).Select(n => PrintJob.From(n!)).Where(j => j.Id.Length > 0).ToList();
     }
 
+    // ilhas e impressora geral da empresa do token (Monitor); alterações exigem administrador do Windows ou PIN
+    public Task<JsonNode?> Islands(string token, CancellationToken ct) => Rpc("print_server_islands", new { p_token = token }, ct);
+    public Task<JsonNode?> IslandSave(string token, string islandId, JsonObject fields, string auth, string pin, CancellationToken ct) =>
+        Rpc("print_server_island_save", new { p_token = token, p_island_id = islandId, p_fields = fields, p_auth = auth, p_pin = pin }, ct);
+    public Task<JsonNode?> GeneralSave(string token, JsonObject fields, string auth, string pin, CancellationToken ct) =>
+        Rpc("print_server_general_save", new { p_token = token, p_fields = fields, p_auth = auth, p_pin = pin }, ct);
+
     public Task<JsonNode?> Ack(string token, string jobId, bool ok, string error, CancellationToken ct) =>
         Rpc("print_server_ack", new { p_token = token, p_job_id = jobId, p_ok = ok, p_error = error ?? "" }, ct);
 }
@@ -70,6 +77,10 @@ public sealed class PrintJob
     public bool Beep { get; set; }
     public int FeedLines { get; set; } = 4;
     public bool OpenDrawer { get; set; }
+    public string PrintMode { get; set; } = "auto";     // auto | raw | driver
+    public string Target { get; set; } = "";            // "geral" = impressora geral do sistema
+    public string OriginType { get; set; } = "";
+    public string OriginNumber { get; set; } = "";
 
     // leitura tolerante: o banco guarda jsonb livre (número/booleano podem vir como texto)
     public static PrintJob From(JsonNode n) => new()
@@ -86,6 +97,10 @@ public sealed class PrintJob
         Beep = Bool(n["beep"], false),
         FeedLines = Int(n["feed_lines"], 4),
         OpenDrawer = Bool(n["open_drawer"], false),
+        PrintMode = Str(n["print_mode"]) is { Length: > 0 } m ? m : "auto",
+        Target = Str(n["target"]),
+        OriginType = Str(n["origin_type"]),
+        OriginNumber = Str(n["origin_number"]),
     };
 
     static string Str(JsonNode? v) => v is null ? "" : v.GetValueKind() == JsonValueKind.String ? v.GetValue<string>() : v.ToJsonString();

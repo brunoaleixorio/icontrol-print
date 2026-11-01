@@ -10,7 +10,7 @@ namespace IControlPrint;
 /// Pipe local "iControlPrint" (só nesta máquina) para o Monitor da bandeja: status, teste, reiniciar, atualização e novo pareamento.
 /// Uma linha JSON de pedido, uma linha JSON de resposta.
 /// </summary>
-public sealed class PipeServer(ILogger<PipeServer> log, ServiceState state, Worker worker, TokenStore store, SupabaseApi api, IHostApplicationLifetime life) : BackgroundService
+public sealed class PipeServer(ILogger<PipeServer> log, ServiceState state, Worker worker, TokenStore store, SupabaseApi api, JobPrinter printer) : BackgroundService
 {
     public const string PipeName = "iControlPrint";
 
@@ -31,8 +31,11 @@ public sealed class PipeServer(ILogger<PipeServer> log, ServiceState state, Work
                 using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true);
                 using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
                 var line = await reader.ReadLineAsync(ct);
+                // quem está do outro lado é administrador do Windows (Monitor aberto "como administrador")?
+                bool admin = false;
+                try { pipe.RunAsClient(() => { using var id = WindowsIdentity.GetCurrent(); admin = new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator); }); } catch { }
                 JsonObject res;
-                try { res = await Handle(JsonNode.Parse(line ?? "{}") as JsonObject ?? new JsonObject(), ct); }
+                try { res = await Handle(JsonNode.Parse(line ?? "{}") as JsonObject ?? new JsonObject(), admin, ct); }
                 catch (Exception ex) { res = new JsonObject { ["ok"] = false, ["error"] = ex.Message }; }
                 await writer.WriteLineAsync(res.ToJsonString());
             }
@@ -41,8 +44,16 @@ public sealed class PipeServer(ILogger<PipeServer> log, ServiceState state, Work
         }
     }
 
-    async Task<JsonObject> Handle(JsonObject req, CancellationToken ct)
+    async Task<JsonObject> Handle(JsonObject req, bool admin, CancellationToken ct)
     {
+        string Token() => store.Load()?.Token ?? throw new InvalidOperationException("Servidor não pareado");
+        static JsonObject Fields(JsonObject req)
+        {
+            var f = new JsonObject();
+            foreach (var k in new[] { "printer_name", "printer_backup", "print_mode", "paper_width_mm", "chars_per_line", "copies" })
+                if (req["fields"]?[k] is { } v) f[k] = v.DeepClone();
+            return f;
+        }
         switch (req["cmd"]?.GetValue<string>())
         {
             case "status":
@@ -53,11 +64,31 @@ public sealed class PipeServer(ILogger<PipeServer> log, ServiceState state, Work
             }
             case "test":
             {
-                var printer = req["printer"]?.GetValue<string>() ?? "";
-                var job = EscPos.TestJob(printer);
-                try { await Task.Run(() => RawPrinter.Send(printer, EscPos.Build(job), "iControl teste"), ct); }
-                catch (Exception ex) { state.AddError("Teste · " + printer, ex.Message); return new JsonObject { ["ok"] = false, ["error"] = ex.Message }; }
-                return new JsonObject { ["ok"] = true };
+                // teste numa impressora, ou numa ilha / na impressora geral com o modo e a largura delas
+                var printerName = req["printer"]?.GetValue<string>() ?? "";
+                var mode = req["mode"]?.GetValue<string>() ?? "auto";
+                var paper = (int?)req["paper"] ?? 80;
+                var label = req["label"]?.GetValue<string>() ?? "";
+                if (printerName.Length == 0) return new JsonObject { ["ok"] = false, ["error"] = "Sem impressora definida" };
+                var job = EscPos.TestJob(printerName, paper, mode, label);
+                try { var how = await Task.Run(() => printer.PrintOne(job, printerName, "iControl teste " + DateTime.Now.ToString("HHmmss")), ct); return new JsonObject { ["ok"] = true, ["how"] = how }; }
+                catch (Exception ex) { state.AddError("Teste · " + printerName, ex.Message); return new JsonObject { ["ok"] = false, ["error"] = ex.Message }; }
+            }
+            case "islands":
+                return new JsonObject { ["ok"] = true, ["config"] = (await worker.RefreshConfig(ct)).DeepClone(), ["admin"] = admin };
+            case "island_save":
+            {
+                var r = await api.IslandSave(Token(), req["island_id"]?.GetValue<string>() ?? "", Fields(req), admin ? "windows_admin" : "", req["pin"]?.GetValue<string>() ?? "", ct);
+                log.LogInformation("Ilha {Id} alterada pelo Monitor ({Who})", req["island_id"]?.ToString(), admin ? "administrador" : "PIN");
+                worker.ConfigNow();
+                return new JsonObject { ["ok"] = true, ["island"] = r?.DeepClone() };
+            }
+            case "general_save":
+            {
+                var r = await api.GeneralSave(Token(), Fields(req), admin ? "windows_admin" : "", req["pin"]?.GetValue<string>() ?? "", ct);
+                log.LogInformation("Impressora geral alterada pelo Monitor ({Who})", admin ? "administrador" : "PIN");
+                worker.ConfigNow();
+                return new JsonObject { ["ok"] = true, ["general"] = r?.DeepClone() };
             }
             case "check-update":
                 worker.HeartbeatNow(forceUpdate: true);
