@@ -1,24 +1,39 @@
 name: iControl Print (servidor de impressão)
 
-# Gera o instalador a cada versão: crie a tag print-v1.0.0 (ou rode manualmente em Actions).
+# Gera o instalador a cada versão (tag print-vX.Y.Z ou manual em Actions), publica na Release do GitHub
+# e no nosso domínio (R2: https://download.icontrolfood.com.br/print/...).
+# "Só reenviar" copia o instalador de uma Release já existente para o R2, sem recompilar (mesmo SHA-256).
 on:
   push:
     tags: ["print-v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: "Versão (ex.: 1.0.0)"
+        description: "Versão (ex.: 1.0.1)"
         required: true
         default: "1.0.0"
+      mirror_only:
+        description: "Só reenviar o instalador já publicado para o R2 (não recompila)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+
+env:
+  DOWNLOAD_BASE: https://download.icontrolfood.com.br/print
+  R2_BUCKET: icontrol-downloads
 
 jobs:
   build:
     runs-on: windows-latest
     env:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      AWS_DEFAULT_REGION: auto
+      MIRROR_ONLY: ${{ github.event.inputs.mirror_only == 'true' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,52 +44,92 @@ jobs:
           $v = "${{ github.event.inputs.version }}"
           if (-not $v) { $v = "${{ github.ref_name }}" -replace '^print-v','' }
           "version=$v" >> $env:GITHUB_OUTPUT
+          "file=print-server/installer/output/iControlPrint-Setup-$v.exe" >> $env:GITHUB_OUTPUT
 
       - uses: actions/setup-dotnet@v4
+        if: env.MIRROR_ONLY != 'true'
         with:
           dotnet-version: "8.0.x"
 
       - name: Publicar (self-contained, win-x64, arquivo único)
+        if: env.MIRROR_ONLY != 'true'
         run: dotnet publish print-server/src/IControlPrint/IControlPrint.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:Version=${{ steps.v.outputs.version }} -o print-server/publish
 
       - name: Inno Setup
+        if: env.MIRROR_ONLY != 'true'
         shell: pwsh
         run: |
           if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMyAppVersion=${{ steps.v.outputs.version }} /DPublishDir=..\publish print-server\installer\iControlPrint.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: SHA-256
+      - name: Baixar instalador da Release (só reenviar)
+        if: env.MIRROR_ONLY == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force print-server/installer/output | Out-Null
+          gh release download "print-v${{ steps.v.outputs.version }}" -p "iControlPrint-Setup-${{ steps.v.outputs.version }}.exe" -D print-server/installer/output --clobber
+
+      - name: SHA-256 e tamanho
         id: sha
         shell: pwsh
         run: |
-          $f = "print-server/installer/output/iControlPrint-Setup-${{ steps.v.outputs.version }}.exe"
+          $f = "${{ steps.v.outputs.file }}"
           $h = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
           "sha=$h" >> $env:GITHUB_OUTPUT
-          "file=$f" >> $env:GITHUB_OUTPUT
+          "size=$((Get-Item $f).Length)" >> $env:GITHUB_OUTPUT
 
       - uses: actions/upload-artifact@v4
+        if: env.MIRROR_ONLY != 'true'
         with:
           name: iControlPrint-Setup-${{ steps.v.outputs.version }}
-          path: ${{ steps.sha.outputs.file }}
+          path: ${{ steps.v.outputs.file }}
 
-      - name: Release
+      - name: Release do GitHub
+        if: env.MIRROR_ONLY != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: print-v${{ steps.v.outputs.version }}
           name: iControl Print ${{ steps.v.outputs.version }}
-          files: ${{ steps.sha.outputs.file }}
-          body: "SHA-256: ${{ steps.sha.outputs.sha }}"
+          files: ${{ steps.v.outputs.file }}
+          body: "SHA-256: ${{ steps.sha.outputs.sha }}\nDownload: ${{ env.DOWNLOAD_BASE }}/iControlPrint-Setup-${{ steps.v.outputs.version }}.exe"
 
-      # Atualização automática: registra a versão no banco (só se o segredo existir)
-      - name: Publicar versão no Supabase
-        if: ${{ env.SUPABASE_SERVICE_ROLE_KEY != '' }}
-        env:
-          SUPABASE_URL: https://lamqcfkzsyeyerqbowck.supabase.co
+      # Nosso domínio: arquivo da versão + "latest" (sempre a última)
+      - name: Enviar para o R2 (download.icontrolfood.com.br)
+        if: env.AWS_ACCESS_KEY_ID != '' && env.R2_ACCOUNT_ID != ''
         shell: pwsh
         run: |
           $v = "${{ steps.v.outputs.version }}"
-          $url = "https://github.com/${{ github.repository }}/releases/download/print-v$v/iControlPrint-Setup-$v.exe"
-          $body = @{ version = $v; url = $url; sha256 = "${{ steps.sha.outputs.sha }}"; active = $true } | ConvertTo-Json
-          Invoke-RestMethod -Method Post -Uri "$env:SUPABASE_URL/rest/v1/print_server_releases" -Body $body -ContentType "application/json" `
+          $f = "${{ steps.v.outputs.file }}"
+          $ep = "https://$env:R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          aws s3 cp $f "s3://$env:R2_BUCKET/print/iControlPrint-Setup-$v.exe" --endpoint-url $ep --content-type application/octet-stream --cache-control "public, max-age=31536000, immutable"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          aws s3 cp $f "s3://$env:R2_BUCKET/print/iControlPrint-Setup-latest.exe" --endpoint-url $ep --content-type application/octet-stream --cache-control "no-cache" --content-disposition "attachment; filename=iControlPrint-Setup-$v.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # confere o arquivo publicado no nosso domínio (mesmo SHA-256)
+          Start-Sleep -Seconds 5
+          Invoke-WebRequest "$env:DOWNLOAD_BASE/iControlPrint-Setup-$v.exe" -OutFile check.exe
+          $got = (Get-FileHash check.exe -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne "${{ steps.sha.outputs.sha }}") { Write-Error "SHA-256 do download não confere ($got)"; exit 1 }
+
+      # Atualização automática: grava a versão no banco (só se o segredo existir)
+      - name: Publicar versão no Supabase
+        if: env.SUPABASE_SERVICE_ROLE_KEY != ''
+        shell: pwsh
+        env:
+          SUPABASE_URL: https://lamqcfkzsyeyerqbowck.supabase.co
+        run: |
+          $v = "${{ steps.v.outputs.version }}"
+          $body = @{ version = $v; url = "$env:DOWNLOAD_BASE/iControlPrint-Setup-$v.exe"; sha256 = "${{ steps.sha.outputs.sha }}"; size_bytes = [int64]"${{ steps.sha.outputs.size }}"; active = $true } | ConvertTo-Json
+          Invoke-RestMethod -Method Post -Uri "$env:SUPABASE_URL/rest/v1/print_server_releases?on_conflict=version" -Body $body -ContentType "application/json" `
             -Headers @{ apikey = $env:SUPABASE_SERVICE_ROLE_KEY; Prefer = "resolution=merge-duplicates" }
+
+      - name: Resumo
+        shell: pwsh
+        run: |
+          "### iControl Print ${{ steps.v.outputs.version }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Download: ${{ env.DOWNLOAD_BASE }}/iControlPrint-Setup-${{ steps.v.outputs.version }}.exe" >> $env:GITHUB_STEP_SUMMARY
+          "- SHA-256: ${{ steps.sha.outputs.sha }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Tamanho: ${{ steps.sha.outputs.size }} bytes" >> $env:GITHUB_STEP_SUMMARY
