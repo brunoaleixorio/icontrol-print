@@ -1,0 +1,80 @@
+name: iControl Print (servidor de impressão)
+
+# Gera o instalador a cada versão: crie a tag print-v1.0.0 (ou rode manualmente em Actions).
+on:
+  push:
+    tags: ["print-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão (ex.: 1.0.0)"
+        required: true
+        default: "1.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versão
+        id: v
+        shell: pwsh
+        run: |
+          $v = "${{ github.event.inputs.version }}"
+          if (-not $v) { $v = "${{ github.ref_name }}" -replace '^print-v','' }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publicar (self-contained, win-x64, arquivo único)
+        run: dotnet publish print-server/src/IControlPrint/IControlPrint.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:Version=${{ steps.v.outputs.version }} -o print-server/publish
+
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMyAppVersion=${{ steps.v.outputs.version }} /DPublishDir=..\publish print-server\installer\iControlPrint.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: SHA-256
+        id: sha
+        shell: pwsh
+        run: |
+          $f = "print-server/installer/output/iControlPrint-Setup-${{ steps.v.outputs.version }}.exe"
+          $h = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+          "sha=$h" >> $env:GITHUB_OUTPUT
+          "file=$f" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iControlPrint-Setup-${{ steps.v.outputs.version }}
+          path: ${{ steps.sha.outputs.file }}
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: print-v${{ steps.v.outputs.version }}
+          name: iControl Print ${{ steps.v.outputs.version }}
+          files: ${{ steps.sha.outputs.file }}
+          body: "SHA-256: ${{ steps.sha.outputs.sha }}"
+
+      # Atualização automática: registra a versão no banco (só se o segredo existir)
+      - name: Publicar versão no Supabase
+        if: ${{ env.SUPABASE_SERVICE_ROLE_KEY != '' }}
+        env:
+          SUPABASE_URL: https://lamqcfkzsyeyerqbowck.supabase.co
+        shell: pwsh
+        run: |
+          $v = "${{ steps.v.outputs.version }}"
+          $url = "https://github.com/${{ github.repository }}/releases/download/print-v$v/iControlPrint-Setup-$v.exe"
+          $body = @{ version = $v; url = $url; sha256 = "${{ steps.sha.outputs.sha }}"; active = $true } | ConvertTo-Json
+          Invoke-RestMethod -Method Post -Uri "$env:SUPABASE_URL/rest/v1/print_server_releases" -Body $body -ContentType "application/json" `
+            -Headers @{ apikey = $env:SUPABASE_SERVICE_ROLE_KEY; Prefer = "resolution=merge-duplicates" }
