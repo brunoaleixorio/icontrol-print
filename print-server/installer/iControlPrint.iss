@@ -9,6 +9,7 @@
 #define MyAppName "iControl Print"
 #define MyExe "IControlPrint.exe"
 #define MyService "iControlPrint"
+#define MyMonitor "IControlPrintMonitor.exe"
 
 [Setup]
 AppId={{6E7C3B0F-2D3A-4C61-9D8B-1C0F1D5E7A21}
@@ -35,6 +36,12 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 
 [Files]
 Source: "{#PublishDir}\{#MyExe}"; DestDir: "{app}"; Flags: ignoreversion
+; mesmo executável como Monitor da bandeja (o Inno guarda uma cópia só). Em atualização silenciosa com o Monitor aberto,
+; o arquivo é trocado no próximo reinício do Windows.
+Source: "{#PublishDir}\{#MyExe}"; DestDir: "{app}"; DestName: "{#MyMonitor}"; Flags: ignoreversion restartreplace
+
+[Registry]
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "iControlPrintMonitor"; ValueData: """{app}\{#MyMonitor}"" --monitor"; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{sys}\sc.exe"; Parameters: "create {#MyService} binPath= ""\""{app}\{#MyExe}\"""" start= auto DisplayName= ""iControl Print"""; Flags: runhidden waituntilterminated
@@ -43,8 +50,11 @@ Filename: "{sys}\sc.exe"; Parameters: "description {#MyService} ""Servidor de im
 Filename: "{sys}\sc.exe"; Parameters: "failure {#MyService} reset= 86400 actions= restart/5000/restart/10000/restart/30000"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "failureflag {#MyService} 1"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "start {#MyService}"; Flags: runhidden waituntilterminated
+; abre o Monitor (usuário logado) já na tela de status
+Filename: "{app}\{#MyMonitor}"; Parameters: "--monitor --show"; Flags: nowait runasoriginaluser skipifsilent
 
 [UninstallRun]
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#MyMonitor}"; Flags: runhidden waituntilterminated; RunOnceId: "KillMonitor"
 Filename: "{app}\{#MyExe}"; Parameters: "--unpair"; Flags: runhidden waituntilterminated; RunOnceId: "Unpair"
 Filename: "{sys}\sc.exe"; Parameters: "stop {#MyService}"; Flags: runhidden waituntilterminated; RunOnceId: "StopSvc"
 Filename: "{sys}\sc.exe"; Parameters: "delete {#MyService}"; Flags: runhidden waituntilterminated; RunOnceId: "DelSvc"
@@ -146,6 +156,9 @@ var
 begin
   // atualização: para o serviço antes de trocar o executável
   Exec(ExpandConstant('{sys}\sc.exe'), 'stop {#MyService}', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  // instalação com tela: fecha o Monitor para trocar o arquivo (na silenciosa, o restartreplace resolve)
+  if not WizardSilent then
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyMonitor}', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Sleep(2500);
   Result := '';
 end;
@@ -166,5 +179,6 @@ end;
 function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo, MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
 begin
   Result := 'Empresa: ' + PairedCompany + NewLine + NewLine +
-            'O iControl Print será instalado como serviço do Windows: inicia com o computador, sem precisar de login, e reinicia sozinho em caso de falha.';
+            'O iControl Print será instalado como serviço do Windows: inicia com o computador, sem precisar de login, e reinicia sozinho em caso de falha.' + NewLine + NewLine +
+            'O iControl Print Monitor fica na bandeja (perto do relógio) para ver a situação, imprimir teste e parear de novo.';
 end;
