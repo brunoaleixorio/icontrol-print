@@ -28,7 +28,16 @@ const sentIds = new Set();      // mensagens enviadas por este programa (não co
 const lidJids = new Map();      // contato que só aparece por LID: dígitos -> jid, para conseguir responder
 const startedAt = Math.floor(Date.now() / 1000);
 
-const isPersonal = (jid = "") => jid.endsWith("@s.whatsapp.net") || jid.endsWith("@lid");
+let creds = null;
+
+// Baileys 6.7: sem a chave de "app state" (o celular a manda pelo LID e às vezes não dá para ler: "No session record"),
+// a biblioteca segura todos os eventos no buffer e as mensagens recebidas nunca chegam ao robô.
+// Enquanto isso durar, libera o buffer a cada 2 s (o envio não é afetado).
+setInterval(() => {
+  try { if (connected && sock?.ev?.isBuffering?.() && !creds?.myAppStateKeyId) sock.ev.flush(true); } catch { /* ignora */ }
+}, 2000);
+
+const isPersonal =(jid = "") => jid.endsWith("@s.whatsapp.net") || jid.endsWith("@lid");
 const ignoreJid = (jid = "") => !isPersonal(jid); // grupos, status, canais, listas de transmissão
 
 function textOf(m = {}) {
@@ -68,6 +77,7 @@ async function start() {
     shouldIgnoreJid: ignoreJid,
   });
   sock.ev.on("creds.update", saveCreds);
+  creds = state.creds;
   sock.ev.on("connection.update", (u) => {
     if (u.qr) { out({ ev: "qr", qr: u.qr }); out({ ev: "status", status: "aguardando_qr" }); }
     if (u.connection === "open") {
@@ -88,14 +98,14 @@ async function start() {
       if (!stopping) setTimeout(() => start().catch(fail), loggedOut ? 1500 : Math.min(60000, 2000 * 2 ** Math.min(retry++, 5)));
     }
   });
-  // mensagens novas (type "notify"); o histórico antigo não é repassado
+  // mensagens novas ("notify") e as que chegaram com o Monitor desligado ("append"), só dos últimos minutos; histórico não
   sock.ev.on("messages.upsert", ({ messages, type }) => {
-    if (type !== "notify") return;
+    if (type !== "notify" && type !== "append") return;
     for (const m of messages || []) {
       try {
         const jid = m.key?.remoteJid || "";
         if (!isPersonal(jid)) continue;
-        if (Number(m.messageTimestamp || 0) < startedAt - 60) continue;
+        if (Number(m.messageTimestamp || 0) < Math.max(startedAt - 300, Date.now() / 1000 - 600)) continue;
         if (m.key.fromMe && sentIds.has(m.key.id)) continue; // enviada pelo próprio Monitor
         const body = textOf(m.message || {});
         if (!body) continue;
