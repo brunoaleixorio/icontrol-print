@@ -24,6 +24,8 @@ public sealed class ServiceState
     /// <summary>Ilhas e impressora geral da empresa (print_server_islands), para o Monitor.</summary>
     public JsonObject Config { get; set; } = new();
     public DateTime? ConfigAt { get; set; }
+    /// <summary>Configuração deste computador no sistema (balança e impressora de etiquetas).</summary>
+    public JsonObject MonitorConfig { get; set; } = new();
     /// <summary>WhatsApp: situação ("conectado · +55...") e QR Code enquanto espera a leitura.</summary>
     public string WhatsApp { get; set; } = "desligado";
     public string WhatsAppQr { get; set; } = "";
@@ -76,6 +78,8 @@ public sealed class ServiceState
                 ["wa_error"] = WhatsAppError,
                 ["wa_connected_at"] = WhatsAppConnectedAt?.ToLocalTime().ToString("dd/MM HH:mm") ?? "",
                 ["wa_bot"] = WhatsAppBot,
+                ["monitor_config"] = MonitorConfig.DeepClone(),
+                ["local_port"] = LocalServer.Port,
                 ["config_at"] = ConfigAt?.ToLocalTime().ToString("dd/MM HH:mm:ss") ?? "",
                 ["errors"] = new JsonArray(_errors.Select(e => (JsonNode)e.DeepClone()).ToArray()),
             };

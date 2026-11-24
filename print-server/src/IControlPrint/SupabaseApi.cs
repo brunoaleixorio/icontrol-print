@@ -70,6 +70,13 @@ public sealed class SupabaseApi
     public Task<JsonNode?> WhatsAppRelease(string token, string id, CancellationToken ct) => Rpc("print_server_whatsapp_release", new { p_token = token, p_id = id }, ct);
     public Task<JsonNode?> WhatsAppSummary(string token, CancellationToken ct) => Rpc("print_server_whatsapp_summary", new { p_token = token }, ct);
 
+    // balança e etiquetas: configuração deste computador e pedidos do sistema
+    public Task<JsonNode?> MyConfig(string token, CancellationToken ct) => Rpc("print_server_my_config", new { p_token = token }, ct);
+    public async Task<List<JsonNode>> Requests(string token, CancellationToken ct) =>
+        (await Rpc("print_server_requests", new { p_token = token }, ct)) is JsonArray a ? a.Where(n => n is not null).Select(n => n!).ToList() : new List<JsonNode>();
+    public Task<JsonNode?> RequestReply(string token, string id, JsonObject result, string error, CancellationToken ct) =>
+        Rpc("print_server_request_reply", new { p_token = token, p_id = id, p_result = result, p_error = error ?? "" }, ct);
+
     public Task<JsonNode?> Ack(string token, string jobId, bool ok, string error, CancellationToken ct) =>
         Rpc("print_server_ack", new { p_token = token, p_job_id = jobId, p_ok = ok, p_error = error ?? "" }, ct);
 }

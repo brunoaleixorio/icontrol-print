@@ -374,13 +374,24 @@ public static class Winspool
         return list;
     }
 
-    public static string StatusText(uint st) => (st & PRINTER_STATUS_OFFLINE) != 0 ? "offline" : (st & PRINTER_STATUS_PAPER_OUT) != 0 ? "sem_papel"
-        : (st & PRINTER_STATUS_ERROR) != 0 ? "erro" : (st & PRINTER_STATUS_PAUSED) != 0 ? "pausada" : "ok";
+    // outros bits do spooler (o driver informa quando a impressora avisa)
+    const uint ST_PAPER_JAM = 0x8, ST_PAPER_PROBLEM = 0x40, ST_NOT_AVAILABLE = 0x1000, ST_NO_TONER = 0x40000, ST_DOOR_OPEN = 0x400000, ST_USER_INTERVENTION = 0x100000;
+
+    /// <summary>Situação para o sistema: offline, sem_papel, tampa_aberta, papel_preso, pouco_papel, sem_tinta, erro, pausada ou ok.</summary>
+    public static string StatusText(uint st) =>
+        (st & (PRINTER_STATUS_OFFLINE | ST_NOT_AVAILABLE)) != 0 ? "offline"
+        : (st & PRINTER_STATUS_PAPER_OUT) != 0 ? "sem_papel"
+        : (st & ST_DOOR_OPEN) != 0 ? "tampa_aberta"
+        : (st & ST_PAPER_JAM) != 0 ? "papel_preso"
+        : (st & ST_PAPER_PROBLEM) != 0 ? "pouco_papel"
+        : (st & ST_NO_TONER) != 0 ? "sem_tinta"
+        : (st & (PRINTER_STATUS_ERROR | ST_USER_INTERVENTION)) != 0 ? "erro"
+        : (st & PRINTER_STATUS_PAUSED) != 0 ? "pausada" : "ok";
 
     public static void EnsureReady(Printers.Info info)
     {
         var st = StatusText(info.Status);
-        if (st is "offline" or "sem_papel" or "pausada") throw new PrintFailure($"Impressora {info.Name} está {st.Replace('_', ' ')}");
+        if (st is "offline" or "sem_papel" or "pausada" or "tampa_aberta" or "papel_preso") throw new PrintFailure($"Impressora {info.Name} está {st.Replace('_', ' ')}");
     }
 
     public static void SendRaw(string printer, byte[] data, string docName)

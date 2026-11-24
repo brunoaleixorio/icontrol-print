@@ -7,6 +7,8 @@ public sealed class Worker(ILogger<Worker> log, ILoggerFactory lf, AppSettings c
     readonly SemaphoreSlim _wake = new(0, 100);
     readonly SemaphoreSlim _hbWake = new(0, 10);
     readonly SemaphoreSlim _cfgWake = new(0, 10);
+    readonly SemaphoreSlim _reqWake = new(0, 20);
+    readonly HashSet<string> _doneRequests = new();
     volatile string _channel = "";
     volatile bool _revoked;
     volatile bool _forceUpdate;
@@ -24,6 +26,9 @@ public sealed class Worker(ILogger<Worker> log, ILoggerFactory lf, AppSettings c
         var res = await api.Islands(token, ct) as JsonObject ?? new JsonObject();
         var before = state.Config;
         state.Config = res; state.ConfigAt = DateTime.UtcNow;
+        // balança e impressora de etiquetas deste computador
+        try { if (await api.MyConfig(token, ct) is JsonObject mc) state.MonitorConfig = mc; }
+        catch (Exception ex) { log.LogDebug("Configuração do computador: {Err}", ex.Message); }
         // ilha nova sem impressora: avisa no log (o Monitor mostra o aviso)
         var known = (before["islands"] as JsonArray ?? new JsonArray()).OfType<JsonObject>().Select(i => i["id"]?.ToString()).ToHashSet();
         foreach (var i in (res["islands"] as JsonArray ?? new JsonArray()).OfType<JsonObject>())
@@ -68,9 +73,11 @@ public sealed class Worker(ILogger<Worker> log, ILoggerFactory lf, AppSettings c
             HeartbeatLoop(ct),
             PullLoop(ct),
             ConfigLoop(ct),
+            RequestLoop(ct),
             realtime.RunAsync(() => _revoked ? "" : _channel, ev =>
             {
                 if (ev == "config") { if (_cfgWake.CurrentCount < 2) _cfgWake.Release(); }
+                else if (ev == "request") { if (_reqWake.CurrentCount < 5) _reqWake.Release(); }
                 else if (_wake.CurrentCount < 5) _wake.Release();
             }, ct));
     }
@@ -113,6 +120,57 @@ public sealed class Worker(ILogger<Worker> log, ILoggerFactory lf, AppSettings c
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex) { state.LastHeartbeatError = ex.Message; log.LogWarning("Heartbeat falhou: {Err}", ex.Message); }
             try { await _hbWake.WaitAsync(delay, ct); } catch (OperationCanceledException) { break; }
+        }
+    }
+
+    /// <summary>Pedidos do sistema (ler a balança, imprimir etiqueta): na hora pelo Realtime "request" e a cada 20 s.</summary>
+    async Task RequestLoop(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            if (!_revoked && store.Load()?.Token is { } token)
+            {
+                try
+                {
+                    foreach (var r in await api.Requests(token, ct))
+                    {
+                        var id = r["id"]?.ToString() ?? "";
+                        if (id.Length == 0 || !_doneRequests.Add(id)) continue;
+                        if (_doneRequests.Count > 500) _doneRequests.Clear();
+                        var kind = r["kind"]?.ToString() ?? "";
+                        var result = new JsonObject();
+                        string error = "";
+                        try
+                        {
+                            if (kind == "scale")
+                            {
+                                var (w, raw) = await ScaleReader.ReadAsync(state.MonitorConfig, ct);
+                                result["weight"] = w; result["raw"] = raw;
+                            }
+                            else if (kind == "label")
+                            {
+                                await Task.Run(() => LabelPrinter.Print(state.MonitorConfig, r["payload"]), ct);
+                                result["printed"] = true;
+                                log.LogInformation("Etiquetas impressas ({Name})", r["payload"]?["label"]?["name"]?.ToString());
+                            }
+                            else error = "Pedido desconhecido: atualize o iControl Monitor";
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            error = ex.Message;
+                            if (kind == "label") state.AddError("Etiqueta", ex.Message);
+                        }
+                        try { await api.RequestReply(token, id, result, error, ct); }
+                        catch (Exception ex) { log.LogWarning("Resposta do pedido {Id} falhou: {Err}", id, ex.Message); }
+                    }
+                }
+                catch (SupabaseApi.UnauthorizedServerException) { _revoked = true; state.Revoked = true; }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+                catch (Exception ex) { log.LogDebug("Pedidos: {Err}", ex.Message); }
+            }
+            try { await _reqWake.WaitAsync(TimeSpan.FromSeconds(20), ct); }
+            catch (OperationCanceledException) { break; }
+            while (_reqWake.CurrentCount > 0) _reqWake.Wait(0);
         }
     }
 
