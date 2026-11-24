@@ -26,6 +26,8 @@ let stopping = false;
 let retry = 0;
 const sentIds = new Set();      // mensagens enviadas por este programa (não contam como "respondido pelo celular")
 const lidJids = new Map();      // contato que só aparece por LID: dígitos -> jid, para conseguir responder
+const lidPn = new Map();        // LID (dígitos) -> número real, quando o WhatsApp manda no pacote (sender_pn)
+const pnDigits = (j) => (typeof j === "string" && j.endsWith("@s.whatsapp.net") ? j.split("@")[0].split(":")[0] : "");
 const startedAt = Math.floor(Date.now() / 1000);
 
 let creds = null;
@@ -78,6 +80,15 @@ async function start() {
   });
   sock.ev.on("creds.update", saveCreds);
   creds = state.creds;
+  // o Baileys 6.7 não repassa o número real de quem aparece por LID; ele vem no pacote bruto (sender_pn)
+  sock.ws.on("CB:message", (node) => {
+    try {
+      const a = node?.attrs || {};
+      const from = String(a.participant || a.from || "");
+      const pn = pnDigits(a.participant_pn) || pnDigits(a.sender_pn);
+      if (from.endsWith("@lid") && pn) lidPn.set(from.split("@")[0].split(":")[0], pn);
+    } catch { /* ignora */ }
+  });
   sock.ev.on("connection.update", (u) => {
     if (u.qr) { out({ ev: "qr", qr: u.qr }); out({ ev: "status", status: "aguardando_qr" }); }
     if (u.connection === "open") {
@@ -111,7 +122,7 @@ async function start() {
         if (!body) continue;
         const who = phoneOf(m.key);
         if (!who) continue;
-        out({ ev: "inbound", from: who.phone, lid: who.jid.endsWith("@lid"), name: m.key.fromMe ? "" : (m.pushName || ""), text: body.text, type: body.type, from_me: !!m.key.fromMe });
+        out({ ev: "inbound", from: who.phone, lid: who.jid.endsWith("@lid"), pn: lidPn.get(who.phone) || "",name: m.key.fromMe ? "" : (m.pushName || ""), text: body.text, type: body.type, from_me: !!m.key.fromMe });
       } catch { /* ignora mensagem que não deu para ler */ }
     }
   });
