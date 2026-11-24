@@ -66,6 +66,10 @@ public sealed class SupabaseApi
     public Task<JsonNode?> WhatsAppAck(string token, string id, bool ok, string error, CancellationToken ct) =>
         Rpc("print_server_whatsapp_ack", new { p_token = token, p_id = id, p_ok = ok, p_error = error ?? "" }, ct);
 
+    public Task<JsonNode?> WhatsAppInbound(string token, JsonObject msg, CancellationToken ct) => Rpc("print_server_whatsapp_inbound", new { p_token = token, p_msg = msg }, ct);
+    public Task<JsonNode?> WhatsAppRelease(string token, string id, CancellationToken ct) => Rpc("print_server_whatsapp_release", new { p_token = token, p_id = id }, ct);
+    public Task<JsonNode?> WhatsAppSummary(string token, CancellationToken ct) => Rpc("print_server_whatsapp_summary", new { p_token = token }, ct);
+
     public Task<JsonNode?> Ack(string token, string jobId, bool ok, string error, CancellationToken ct) =>
         Rpc("print_server_ack", new { p_token = token, p_job_id = jobId, p_ok = ok, p_error = error ?? "" }, ct);
 }

@@ -10,7 +10,7 @@ namespace IControlPrint;
 /// Pipe local "iControlPrint" (só nesta máquina) para o Monitor da bandeja: status, teste, reiniciar, atualização e novo pareamento.
 /// Uma linha JSON de pedido, uma linha JSON de resposta.
 /// </summary>
-public sealed class PipeServer(ILogger<PipeServer> log, ServiceState state, Worker worker, TokenStore store, SupabaseApi api, JobPrinter printer) : BackgroundService
+public sealed class PipeServer(ILogger<PipeServer> log, ServiceState state, Worker worker, TokenStore store, SupabaseApi api, JobPrinter printer, WhatsAppBridge whatsapp) : BackgroundService
 {
     public const string PipeName = "iControlPrint";
 
@@ -90,6 +90,12 @@ public sealed class PipeServer(ILogger<PipeServer> log, ServiceState state, Work
                 worker.ConfigNow();
                 return new JsonObject { ["ok"] = true, ["general"] = r?.DeepClone() };
             }
+            case "wa_logout":
+                // desconectar o número ou refazer a conexão: o módulo sai e mostra um QR Code novo
+                log.LogInformation("WhatsApp: desconectado pelo Monitor");
+                return whatsapp.Logout() ? new JsonObject { ["ok"] = true } : new JsonObject { ["ok"] = false, ["error"] = "O WhatsApp não está ligado neste computador. Ligue em Configurações > WhatsApp no sistema." };
+            case "wa_summary":
+                return new JsonObject { ["ok"] = true, ["summary"] = (await whatsapp.Summary(ct))?.DeepClone() };
             case "check-update":
                 worker.HeartbeatNow(forceUpdate: true);
                 await Task.Delay(4000, ct);

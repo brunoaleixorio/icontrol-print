@@ -27,6 +27,11 @@ public sealed class ServiceState
     /// <summary>WhatsApp: situação ("conectado · +55...") e QR Code enquanto espera a leitura.</summary>
     public string WhatsApp { get; set; } = "desligado";
     public string WhatsAppQr { get; set; } = "";
+    public string WhatsAppStatus { get; set; } = "desligado";
+    public string WhatsAppPhone { get; set; } = "";
+    public string WhatsAppError { get; set; } = "";
+    public DateTime? WhatsAppConnectedAt { get; set; }
+    public bool WhatsAppBot { get; set; }
 
     public bool Online => LastHeartbeatOk is { } t && DateTime.UtcNow - t < TimeSpan.FromSeconds(90);
 
@@ -66,6 +71,11 @@ public sealed class ServiceState
                 ["config"] = Config.DeepClone(),
                 ["whatsapp"] = WhatsApp,
                 ["whatsapp_qr"] = WhatsAppQr,
+                ["wa_status"] = WhatsAppStatus,
+                ["wa_phone"] = WhatsAppPhone,
+                ["wa_error"] = WhatsAppError,
+                ["wa_connected_at"] = WhatsAppConnectedAt?.ToLocalTime().ToString("dd/MM HH:mm") ?? "",
+                ["wa_bot"] = WhatsAppBot,
                 ["config_at"] = ConfigAt?.ToLocalTime().ToString("dd/MM HH:mm:ss") ?? "",
                 ["errors"] = new JsonArray(_errors.Select(e => (JsonNode)e.DeepClone()).ToArray()),
             };

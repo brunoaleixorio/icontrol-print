@@ -3,13 +3,15 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading.Channels;
 
 namespace IControlPrint;
 
 /// <summary>
-/// WhatsApp do restaurante (sessão por QR Code) para os avisos de pedido. Liga só no computador escolhido no sistema
-/// (Configurações > WhatsApp). Roda o icontrol-whatsapp.exe (Baileys) como processo filho e conversa por linhas JSON.
-/// Proteções: intervalo mínimo entre mensagens com variação, limite por hora e só mensagens da fila do sistema.
+/// WhatsApp do restaurante (sessão por QR Code): avisos de pedido e robô de atendimento. Liga só no computador escolhido no
+/// sistema (Configurações > WhatsApp). Roda o icontrol-whatsapp.exe (Baileys) como processo filho e conversa por linhas JSON.
+/// Mensagens recebidas vão para o banco (print_server_whatsapp_inbound), que decide a resposta do robô.
+/// Proteções: intervalo mínimo entre avisos com variação, limite por hora e só mensagens da fila do sistema.
 /// </summary>
 public sealed class WhatsAppBridge(ILogger<WhatsAppBridge> log, TokenStore store, SupabaseApi api, ServiceState state) : BackgroundService
 {
@@ -19,13 +21,36 @@ public sealed class WhatsAppBridge(ILogger<WhatsAppBridge> log, TokenStore store
     Process? _proc;
     readonly object _lock = new();
     string _status = "desligado", _phone = "", _error = "", _qr = "";
+    DateTime? _connectedAt;
     string _lastLogout = "";
+    volatile bool _bot;
     readonly Dictionary<string, TaskCompletionSource<string>> _waiting = new();
     readonly Queue<DateTime> _sentTimes = new();
     DateTime _lastSent = DateTime.MinValue;
+    readonly SemaphoreSlim _wake = new(0);
+    readonly Channel<JsonObject> _inbound = Channel.CreateBounded<JsonObject>(new BoundedChannelOptions(500) { FullMode = BoundedChannelFullMode.DropOldest });
+
+    /// <summary>Desconectar / refazer a conexão pelo Monitor: sai do número e gera um QR Code novo.</summary>
+    public bool Logout()
+    {
+        if (_proc is not { HasExited: false }) return false;
+        Send(new JsonObject { ["cmd"] = "logout" });
+        Wake();
+        return true;
+    }
+
+    /// <summary>Fila, enviadas hoje e erros (aba WhatsApp do Monitor).</summary>
+    public async Task<JsonNode?> Summary(CancellationToken ct)
+    {
+        var token = store.Load()?.Token;
+        return token is null ? null : await api.WhatsAppSummary(token, ct);
+    }
+
+    void Wake() { if (_wake.CurrentCount == 0) _wake.Release(); }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
+        _ = Task.Run(() => InboundLoop(ct), ct);
         while (!ct.IsCancellationRequested)
         {
             var token = store.Load()?.Token;
@@ -36,6 +61,7 @@ public sealed class WhatsAppBridge(ILogger<WhatsAppBridge> log, TokenStore store
                 {
                     var cfg = await api.WhatsAppState(token, Snapshot(), ct);
                     var enabled = cfg?["enabled"]?.GetValue<bool>() == true;
+                    _bot = cfg?["bot"]?.GetValue<bool>() == true;
                     if (enabled && File.Exists(Exe))
                     {
                         EnsureRunning();
@@ -46,7 +72,7 @@ public sealed class WhatsAppBridge(ILogger<WhatsAppBridge> log, TokenStore store
                             _lastLogout = logout;
                         }
                         if (_status == "conectado") await SendQueue(token, cfg!, ct);
-                        delay = TimeSpan.FromSeconds(_status == "aguardando_qr" ? 5 : 10);
+                        delay = TimeSpan.FromSeconds(_status == "aguardando_qr" ? 4 : _bot ? 5 : 10);
                     }
                     else
                     {
@@ -58,9 +84,30 @@ public sealed class WhatsAppBridge(ILogger<WhatsAppBridge> log, TokenStore store
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 catch (Exception ex) { log.LogWarning("WhatsApp: {Err}", ex.Message); }
             }
-            try { await Task.Delay(delay, ct); } catch (OperationCanceledException) { break; }
+            try { await _wake.WaitAsync(delay, ct); } catch (OperationCanceledException) { break; }
         }
         Stop();
+    }
+
+    // mensagem recebida -> banco (robô). Se o robô respondeu, a fila é lida na hora.
+    async Task InboundLoop(CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var msg in _inbound.Reader.ReadAllAsync(ct))
+            {
+                var token = store.Load()?.Token;
+                if (token is null || !_bot) continue;
+                try
+                {
+                    var r = await api.WhatsAppInbound(token, msg, ct);
+                    if (r?["reply"]?.GetValue<bool>() == true) Wake();
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+                catch (Exception ex) { log.LogWarning("WhatsApp: mensagem recebida não registrada: {Err}", ex.Message); }
+            }
+        }
+        catch (OperationCanceledException) { /* serviço parando */ }
     }
 
     JsonObject Snapshot()
@@ -68,15 +115,27 @@ public sealed class WhatsAppBridge(ILogger<WhatsAppBridge> log, TokenStore store
         lock (_lock)
         {
             state.WhatsApp = $"{_status}{(_phone.Length > 0 ? " · +" + _phone : "")}";
+            state.WhatsAppStatus = _status;
+            state.WhatsAppPhone = _phone;
+            state.WhatsAppError = _error;
+            state.WhatsAppConnectedAt = _status == "conectado" ? _connectedAt : null;
             state.WhatsAppQr = _status == "aguardando_qr" ? _qr : "";
+            state.WhatsAppBot = _bot;
             return new JsonObject { ["status"] = _status, ["phone"] = _phone, ["error"] = _error, ["qr"] = _status == "aguardando_qr" ? _qr : "" };
         }
     }
 
     void SetState(string status, string? phone = null, string? error = null)
     {
-        lock (_lock) { _status = status; if (phone is not null) _phone = phone; _error = error ?? ""; }
+        bool changed;
+        lock (_lock)
+        {
+            changed = status != _status;
+            if (status == "conectado" && _status != "conectado") _connectedAt = DateTime.UtcNow;
+            _status = status; if (phone is not null) _phone = phone; _error = error ?? "";
+        }
         Snapshot();
+        if (changed) Wake(); // o sistema vê a mudança (ex.: conectado) na hora
     }
 
     async Task SendQueue(string token, JsonNode cfg, CancellationToken ct)
@@ -84,15 +143,19 @@ public sealed class WhatsAppBridge(ILogger<WhatsAppBridge> log, TokenStore store
         var minGap = TimeSpan.FromSeconds(Math.Max(5, cfg["min_interval_sec"]?.GetValue<double>() ?? 10));
         var maxHour = (int)Math.Clamp(cfg["max_per_hour"]?.GetValue<double>() ?? 60, 1, 120);
         while (_sentTimes.Count > 0 && DateTime.UtcNow - _sentTimes.Peek() > TimeSpan.FromHours(1)) _sentTimes.Dequeue();
-        if (_sentTimes.Count >= maxHour) return;
-
-        var msgs = await api.WhatsAppPull(token, Math.Min(5, maxHour - _sentTimes.Count), ct);
+        // respostas da conversa (robô/atendente) não entram no limite por hora dos avisos
+        var room = Math.Max(0, maxHour - _sentTimes.Count);
+        var msgs = await api.WhatsAppPull(token, 5, ct);
         foreach (var m in msgs)
         {
             var id = m["id"]?.GetValue<string>() ?? "";
             if (id.Length == 0) continue;
-            // intervalo mínimo + variação de 0 a 4 s (envio com cara de gente, não de robô)
-            var wait = _lastSent + minGap + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 4000)) - DateTime.UtcNow;
+            var reply = m["reply"]?.GetValue<bool>() == true;
+            if (!reply && room <= 0) { await api.WhatsAppRelease(token, id, ct); continue; }
+            // aviso: intervalo mínimo + variação de 0 a 4 s; resposta de conversa: 1,5 a 3,5 s (tempo de "digitar")
+            var wait = reply
+                ? _lastSent + TimeSpan.FromMilliseconds(Random.Shared.Next(1500, 3500)) - DateTime.UtcNow
+                : _lastSent + minGap + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 4000)) - DateTime.UtcNow;
             if (wait > TimeSpan.Zero) await Task.Delay(wait, ct);
             var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             lock (_waiting) _waiting[id] = tcs;
@@ -101,7 +164,8 @@ public sealed class WhatsAppBridge(ILogger<WhatsAppBridge> log, TokenStore store
             try { err = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(45), ct); }
             catch (TimeoutException) { err = "Sem resposta do WhatsApp"; }
             finally { lock (_waiting) _waiting.Remove(id); }
-            _lastSent = DateTime.UtcNow; _sentTimes.Enqueue(_lastSent);
+            _lastSent = DateTime.UtcNow;
+            if (!reply) { _sentTimes.Enqueue(_lastSent); room--; }
             try { await api.WhatsAppAck(token, id, err.Length == 0, err, ct); }
             catch (Exception ex) { log.LogWarning("Ack do WhatsApp {Id} falhou: {Err}", id, ex.Message); }
             if (err.Length > 0) state.AddError("WhatsApp", err);
@@ -121,6 +185,8 @@ public sealed class WhatsAppBridge(ILogger<WhatsAppBridge> log, TokenStore store
                 UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
                 WorkingDirectory = AppContext.BaseDirectory,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardInputEncoding = new System.Text.UTF8Encoding(false),
             };
             var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
             p.OutputDataReceived += (_, e) => { if (e.Data is { Length: > 0 } line) OnLine(line); };
@@ -141,7 +207,7 @@ public sealed class WhatsAppBridge(ILogger<WhatsAppBridge> log, TokenStore store
         try { n = JsonNode.Parse(line); } catch (JsonException) { return; }
         switch (n?["ev"]?.GetValue<string>())
         {
-            case "qr": lock (_lock) _qr = n["qr"]?.GetValue<string>() ?? ""; Snapshot(); break;
+            case "qr": lock (_lock) _qr = n["qr"]?.GetValue<string>() ?? ""; Snapshot(); Wake(); break;
             case "status":
                 var st = n["status"]?.GetValue<string>() ?? "";
                 SetState(st, n["phone"]?.GetValue<string>() ?? (st == "conectado" ? null : ""), n["error"]?.GetValue<string>());
@@ -149,6 +215,9 @@ public sealed class WhatsAppBridge(ILogger<WhatsAppBridge> log, TokenStore store
                 break;
             case "sent": Done(n["id"]?.GetValue<string>(), ""); break;
             case "failed": Done(n["id"]?.GetValue<string>(), n["error"]?.GetValue<string>() ?? "Falha no envio"); break;
+            case "inbound":
+                if (_bot && n is JsonObject o) { o.Remove("ev"); _inbound.Writer.TryWrite(o); }
+                break;
         }
     }
 

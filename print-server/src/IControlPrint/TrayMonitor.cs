@@ -81,12 +81,14 @@ sealed class MonitorContext : ApplicationContext
     readonly Dictionary<string, string> _printerStatus = new();
     readonly HashSet<string> _islandsSeen = new();
     bool _first = true;
+    string _waStatus = "";
 
     public MonitorContext(bool show)
     {
         _menu.Items.Add(_header);
         _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add("Abrir status e ilhas", null, (_, _) => ShowForm());
+        _menu.Items.Add("Abrir o Monitor", null, (_, _) => ShowForm());
+        _menu.Items.Add("WhatsApp", null, (_, _) => ShowForm("whatsapp"));
         _menu.Items.Add(_testMenu);
         _menu.Items.Add("Reiniciar serviço", null, (_, _) => Restart());
         _menu.Items.Add("Abrir logs", null, (_, _) => OpenLogs());
@@ -189,13 +191,22 @@ sealed class MonitorContext : ApplicationContext
                 _tray.ShowBalloonTip(8000, "Nova ilha sem impressora", $"{i["name"]}: escolha a impressora no Monitor ou no sistema.", ToolTipIcon.Warning);
         }
 
+        // WhatsApp: aviso quando conecta (depois de ler o QR Code) ou cai
+        var wa = s?["wa_status"]?.GetValue<string>() ?? "";
+        if (!_first && wa != _waStatus)
+        {
+            if (wa == "conectado") _tray.ShowBalloonTip(8000, "WhatsApp conectado!", $"Número +{s?["wa_phone"]}. Os avisos de pedido já podem sair.", ToolTipIcon.Info);
+            else if (_waStatus == "conectado" && wa is "desconectado" or "erro") _tray.ShowBalloonTip(8000, "WhatsApp desconectado", s?["wa_error"]?.ToString() is { Length: > 0 } e ? e : "Abra o Monitor > WhatsApp.", ToolTipIcon.Warning);
+        }
+        _waStatus = wa;
+
         var nowOnline = reachable && online;
         if (!_first && _wasOnline == true && !nowOnline)
             _tray.ShowBalloonTip(8000, "iControl Monitor offline", reachable ? "Sem conexão com o iControl Food. Confira a internet." : "O serviço de impressão parou.", ToolTipIcon.Warning);
         _wasOnline = nowOnline;
     }
 
-    void ShowForm()
+    void ShowForm(string? page = null)
     {
         if (_form is null || _form.IsDisposed)
         {
@@ -203,6 +214,7 @@ sealed class MonitorContext : ApplicationContext
             _form.FormClosed += (_, _) => _form = null;
         }
         _form.Bind(Status, _header.Text ?? "");
+        if (page is not null) _form.Show(page);
         _form.Show(); _form.WindowState = FormWindowState.Normal; _form.Activate();
     }
 
@@ -288,151 +300,6 @@ sealed class MonitorContext : ApplicationContext
     {
         _timer.Stop(); _showTimer.Stop(); _tray.Visible = false; _tray.Dispose(); _form?.Dispose();
         base.ExitThreadCore();
-    }
-}
-
-/// <summary>Tela do Monitor: Situação (status e erros) e Ilhas (ilhas + impressora geral).</summary>
-sealed class StatusForm : Form
-{
-    readonly MonitorContext _ctx;
-    readonly Label _title = new() { AutoSize = true, Font = new Font("Segoe UI", 13, FontStyle.Bold) };
-    readonly Label _info = new() { AutoSize = true, Font = new Font("Segoe UI", 9.5f) };
-    readonly ListView _errors = new() { View = View.Details, FullRowSelect = true, HeaderStyle = ColumnHeaderStyle.Nonclickable, Dock = DockStyle.Fill };
-    readonly ListView _islands = new() { View = View.Details, FullRowSelect = true, MultiSelect = false, HeaderStyle = ColumnHeaderStyle.Nonclickable, Dock = DockStyle.Fill };
-    readonly Label _islandsNote = new() { AutoSize = true, ForeColor = Color.DarkGoldenrod, Padding = new Padding(4) };
-
-    public StatusForm(MonitorContext ctx)
-    {
-        _ctx = ctx;
-        Text = "iControl Monitor";
-        Icon = Icons.Normal;
-        StartPosition = FormStartPosition.CenterScreen;
-        Size = new Size(780, 560); MinimumSize = new Size(600, 440);
-        Font = new Font("Segoe UI", 9.5f);
-
-        var tabs = new TabControl { Dock = DockStyle.Fill };
-        // --- Situação
-        var tabStatus = new TabPage("Situação") { Padding = new Padding(8) };
-        _errors.Columns.Add("Quando", 110); _errors.Columns.Add("Job", 200); _errors.Columns.Add("Erro", 380);
-        var top = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
-        top.Controls.Add(_title); top.Controls.Add(_info);
-        var errBox = new GroupBox { Text = "Últimos erros", Dock = DockStyle.Fill, Padding = new Padding(8) };
-        errBox.Controls.Add(_errors);
-        tabStatus.Controls.Add(errBox); tabStatus.Controls.Add(top);
-        // --- Ilhas
-        var tabIslands = new TabPage("Ilhas e impressora geral") { Padding = new Padding(8) };
-        foreach (var (h, w) in new[] { ("Ilha", 150), ("Ativa", 50), ("Impressora", 210), ("Modo", 110), ("Papel", 70), ("Vias", 45), ("Alterado por", 140) }) _islands.Columns.Add(h, w);
-        _islands.DoubleClick += (_, _) => ConfigureSelected();
-        var islandBtns = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, Padding = new Padding(0, 6, 0, 0) };
-        void IB(string t, Action a) { var b = new Button { Text = t, AutoSize = true }; b.Click += (_, _) => a(); islandBtns.Controls.Add(b); }
-        IB("Configurar impressora/modo/papel", ConfigureSelected);
-        IB("Imprimir teste", TestSelected);
-        IB("Atualizar do sistema", () => { PipeClient.Send(new JsonObject { ["cmd"] = "islands" }, 10000); _ctx.Refresh(); });
-        var hint = new Label { Dock = DockStyle.Top, AutoSize = true, ForeColor = Color.DimGray, Padding = new Padding(4),
-            Text = "Criar, renomear, excluir ilhas e escolher produtos é feito no sistema (Configurações > PDV > Impressão)." };
-        tabIslands.Controls.Add(_islands); tabIslands.Controls.Add(_islandsNote); tabIslands.Controls.Add(hint); tabIslands.Controls.Add(islandBtns);
-        tabs.TabPages.Add(tabStatus); tabs.TabPages.Add(tabIslands);
-
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, Padding = new Padding(8) };
-        void Add(string text, Action a) { var b = new Button { Text = text, AutoSize = true }; b.Click += (_, _) => a(); buttons.Controls.Add(b); }
-        Add("Reiniciar serviço", _ctx.Restart);
-        Add("Abrir logs", _ctx.OpenLogs);
-        Add("Abrir pasta dos PDFs", _ctx.OpenPdf);
-        Add("Parear de novo / Trocar empresa", _ctx.Pair);
-        Add("Verificar atualização", _ctx.CheckUpdate);
-        Add("WhatsApp (QR Code)", ShowWhatsApp);
-
-        Controls.Add(tabs); Controls.Add(buttons);
-        FormClosing += (_, e) => { if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
-    }
-
-    JsonObject? SelectedTarget(out bool general)
-    {
-        general = false;
-        if (_islands.SelectedItems.Count == 0) { MessageBox.Show("Selecione uma ilha ou a impressora geral.", "iControl Monitor"); return null; }
-        var tag = _islands.SelectedItems[0].Tag as JsonObject;
-        general = tag is null;
-        return tag;
-    }
-    void ConfigureSelected() { var t = SelectedTarget(out var general); if (t is not null || general) _ctx.Configure(general ? null : t); }
-    void TestSelected()
-    {
-        var t = SelectedTarget(out var general);
-        if (t is null && !general) return;
-        var o = t ?? MonitorContext.General(_ctx.Status);
-        var printer = o["printer_name"]?.ToString() ?? "";
-        if (printer.Length == 0) { MessageBox.Show("Defina a impressora antes de testar.", "iControl Monitor"); return; }
-        _ctx.Test(printer, o["print_mode"]?.ToString() ?? "auto", MonitorContext.Paper(o, MonitorContext.DefaultPaper(_ctx.Status)), general ? "Impressora geral" : $"Ilha {o["name"]}");
-    }
-
-    string _waStatus = "", _waQr = "";
-
-    // QR Code do WhatsApp (o mesmo aparece no sistema, em Configurações > WhatsApp)
-    void ShowWhatsApp()
-    {
-        if (_waQr.Length == 0)
-        {
-            MessageBox.Show(_waStatus.StartsWith("conectado") ? $"WhatsApp {_waStatus}." :
-                "Sem QR Code agora. Ligue o WhatsApp no sistema (Configurações > WhatsApp) e escolha este computador.", "iControl Monitor");
-            return;
-        }
-        using var gen = new QRCoder.QRCodeGenerator();
-        using var qd = gen.CreateQrCode(_waQr, QRCoder.QRCodeGenerator.ECCLevel.L);
-        var png = new QRCoder.PngByteQRCode(qd).GetGraphic(6);
-        using var ms = new MemoryStream(png);
-        using var img = Image.FromStream(ms);
-        using var f = new Form { Text = "WhatsApp: leia com o celular do restaurante", StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, ClientSize = new Size(380, 430), Icon = Icons.Normal };
-        f.Controls.Add(new PictureBox { Image = new Bitmap(img), SizeMode = PictureBoxSizeMode.Zoom, Left = 20, Top = 10, Width = 340, Height = 340 });
-        f.Controls.Add(new Label { Left = 20, Top = 355, Width = 340, Height = 70, Text = "No celular: WhatsApp > Aparelhos conectados > Conectar um aparelho. O código muda a cada 20 segundos: se expirar, feche e abra de novo." });
-        f.ShowDialog(this);
-    }
-
-    static string ModeLabel(string? m) => m switch { "raw" => "Direto", "driver" => "Driver", _ => "Automático" };
-
-    public void Bind(JsonObject? s, string title)
-    {
-        if (IsDisposed) return;
-        _title.Text = title;
-        if (s?["ok"]?.GetValue<bool>() != true) { _info.Text = "O serviço iControl Monitor não está respondendo. Clique em Reiniciar serviço."; return; }
-        string V(string k) => s[k]?.ToString() ?? "";
-        var sb = new StringBuilder();
-        if (V("cnpj").Length > 0) sb.AppendLine($"Empresa: {V("company")} · CNPJ {V("cnpj")}");
-        sb.AppendLine($"Situação: {(s["online"]?.GetValue<bool>() == true ? "online" : "offline")}{(V("role").Length > 0 ? $" · {(V("role") == "principal" ? "servidor principal" : "servidor reserva")}" : "")}");
-        sb.AppendLine($"Versão: {V("version")}{(V("latest_version").Length > 0 && V("latest_version") != V("version") ? $" (publicada {V("latest_version")})" : "")}");
-        sb.AppendLine($"Fila no sistema: {V("queue")} · erros nas últimas 2 h: {V("server_errors")}");
-        sb.AppendLine($"Último sinal: {V("last_heartbeat")}{(V("last_print_ok").Length > 0 ? $" · última impressão: {V("last_print_ok")}" : "")}");
-        if (V("last_file").Length > 0) sb.AppendLine($"Último PDF: {V("last_file")}");
-        if (V("last_heartbeat_error").Length > 0) sb.AppendLine($"Conexão: {V("last_heartbeat_error")}");
-        if (V("update_status").Length > 0) sb.AppendLine($"Atualização: {V("update_status")}");
-        _waStatus = V("whatsapp"); _waQr = V("whatsapp_qr");
-        sb.AppendLine($"WhatsApp: {(_waStatus.Length > 0 ? _waStatus.Replace("_", " ") : "desligado")}");
-        sb.Append($"Computador: {V("machine")}");
-        _info.Text = sb.ToString();
-
-        _errors.BeginUpdate(); _errors.Items.Clear();
-        foreach (var e in (s["errors"] as JsonArray ?? new JsonArray()).OfType<JsonObject>())
-            _errors.Items.Add(new ListViewItem(new[] { e["at"]?.ToString() ?? "", e["title"]?.ToString() ?? "", e["message"]?.ToString() ?? "" }));
-        _errors.EndUpdate();
-
-        var def = MonitorContext.DefaultPaper(s);
-        string PaperText(JsonObject o) { var w = MonitorContext.Paper(o, def); return w >= 200 ? "A4" : $"{w} mm"; }
-        var sel = _islands.SelectedItems.Count > 0 ? _islands.SelectedItems[0].Index : -1;
-        _islands.BeginUpdate(); _islands.Items.Clear();
-        var g = MonitorContext.General(s);
-        _islands.Items.Add(new ListViewItem(new[] { "Impressora geral (cupons)", "sim", g["printer_name"]?.ToString() is { Length: > 0 } gp ? gp : "(não definida)", ModeLabel(g["print_mode"]?.ToString()), PaperText(g), g["copies"]?.ToString() ?? "1", g["updated_by"]?.ToString() ?? "" }) { Tag = null, Font = new Font(Font, FontStyle.Bold) });
-        int missing = 0;
-        foreach (var i in MonitorContext.Islands(s))
-        {
-            var active = i["active"]?.GetValue<bool>() != false;
-            var printer = i["printer_name"]?.ToString() ?? "";
-            if (active && printer.Length == 0) missing++;
-            var item = new ListViewItem(new[] { i["name"]?.ToString() ?? "", active ? "sim" : "não", printer.Length > 0 ? printer : "Nova ilha sem impressora", ModeLabel(i["print_mode"]?.ToString()), PaperText(i), i["copies"]?.ToString() ?? "1", i["updated_by"]?.ToString() ?? "" }) { Tag = i };
-            if (!active) item.ForeColor = Color.Gray; else if (printer.Length == 0) item.ForeColor = Color.DarkOrange;
-            _islands.Items.Add(item);
-        }
-        _islands.EndUpdate();
-        if (sel >= 0 && sel < _islands.Items.Count) _islands.Items[sel].Selected = true;
-        _islandsNote.Text = missing > 0 ? $"{missing} ilha(s) sem impressora: os pedidos delas dão erro até configurar." : $"Sincronizado com o sistema às {V("config_at")}.";
     }
 }
 
