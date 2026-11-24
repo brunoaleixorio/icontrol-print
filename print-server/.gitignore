@@ -1,0 +1,4 @@
+publish/
+installer/output/
+**/bin/
+**/obj/

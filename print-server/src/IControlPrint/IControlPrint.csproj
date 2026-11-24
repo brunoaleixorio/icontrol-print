@@ -9,7 +9,7 @@
     <RootNamespace>IControlPrint</RootNamespace>
     <Version>1.0.0</Version>
     <Company>iControl Food</Company>
-    <Product>iControl Print</Product>
+    <Product>iControl Monitor</Product>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>

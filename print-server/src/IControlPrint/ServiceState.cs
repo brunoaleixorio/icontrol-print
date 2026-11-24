@@ -24,6 +24,9 @@ public sealed class ServiceState
     /// <summary>Ilhas e impressora geral da empresa (print_server_islands), para o Monitor.</summary>
     public JsonObject Config { get; set; } = new();
     public DateTime? ConfigAt { get; set; }
+    /// <summary>WhatsApp: situação ("conectado · +55...") e QR Code enquanto espera a leitura.</summary>
+    public string WhatsApp { get; set; } = "desligado";
+    public string WhatsAppQr { get; set; } = "";
 
     public bool Online => LastHeartbeatOk is { } t && DateTime.UtcNow - t < TimeSpan.FromSeconds(90);
 
@@ -61,6 +64,8 @@ public sealed class ServiceState
                 ["last_file"] = LastFile,
                 ["pdf_folder"] = DriverPrinter.PdfFolder,
                 ["config"] = Config.DeepClone(),
+                ["whatsapp"] = WhatsApp,
+                ["whatsapp_qr"] = WhatsAppQr,
                 ["config_at"] = ConfigAt?.ToLocalTime().ToString("dd/MM HH:mm:ss") ?? "",
                 ["errors"] = new JsonArray(_errors.Select(e => (JsonNode)e.DeepClone()).ToArray()),
             };

@@ -56,7 +56,8 @@ try
     builder.Services.AddSingleton<Worker>();
     builder.Services.AddHostedService(sp => sp.GetRequiredService<Worker>());
     builder.Services.AddHostedService<PipeServer>();
-    Log.Information("iControl Print {Version} iniciando", AppInfo.Version);
+    builder.Services.AddHostedService<WhatsAppBridge>();
+    Log.Information("iControl Monitor {Version} iniciando", AppInfo.Version);
     await builder.Build().RunAsync();
     return 0;
 }

@@ -59,6 +59,13 @@ public sealed class SupabaseApi
     public Task<JsonNode?> GeneralSave(string token, JsonObject fields, string auth, string pin, CancellationToken ct) =>
         Rpc("print_server_general_save", new { p_token = token, p_fields = fields, p_auth = auth, p_pin = pin }, ct);
 
+    // WhatsApp (avisos de pedido): situação da sessão, fila e confirmação
+    public Task<JsonNode?> WhatsAppState(string token, JsonObject st, CancellationToken ct) => Rpc("print_server_whatsapp_state", new { p_token = token, p_state = st }, ct);
+    public async Task<List<JsonNode>> WhatsAppPull(string token, int limit, CancellationToken ct) =>
+        (await Rpc("print_server_whatsapp_pull", new { p_token = token, p_limit = limit }, ct)) is JsonArray a ? a.Where(n => n is not null).Select(n => n!).ToList() : new List<JsonNode>();
+    public Task<JsonNode?> WhatsAppAck(string token, string id, bool ok, string error, CancellationToken ct) =>
+        Rpc("print_server_whatsapp_ack", new { p_token = token, p_id = id, p_ok = ok, p_error = error ?? "" }, ct);
+
     public Task<JsonNode?> Ack(string token, string jobId, bool ok, string error, CancellationToken ct) =>
         Rpc("print_server_ack", new { p_token = token, p_job_id = jobId, p_ok = ok, p_error = error ?? "" }, ct);
 }

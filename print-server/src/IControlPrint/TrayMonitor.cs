@@ -9,7 +9,7 @@ using System.Text.Json.Nodes;
 namespace IControlPrint;
 
 /// <summary>
-/// iControl Print Monitor: ícone na bandeja para o usuário logado. Situação do serviço, ilhas e impressora geral
+/// iControl Monitor: ícone na bandeja para o usuário logado. Situação do serviço, ilhas e impressora geral
 /// (lidas do banco pelo serviço, nunca por company_id), teste, reiniciar, logs, pasta dos PDFs, pareamento e avisos.
 /// </summary>
 public static class TrayMonitor
@@ -96,7 +96,7 @@ sealed class MonitorContext : ApplicationContext
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Fechar o Monitor", null, (_, _) => ExitThread());
         _tray.ContextMenuStrip = _menu;
-        _tray.Text = "iControl Print";
+        _tray.Text = "iControl Monitor";
         _tray.Icon = Icons.Gray;
         _tray.Visible = true;
         _tray.DoubleClick += (_, _) => ShowForm();
@@ -125,7 +125,7 @@ sealed class MonitorContext : ApplicationContext
         else if (!online) { title = $"Offline ({company})"; _tray.Icon = Icons.Gray; }
         else { title = $"Conectado a {company}"; _tray.Icon = recentError || NoPrinterIslands(s).Any() ? Icons.Alert : Icons.Normal; }
         _header.Text = title;
-        var tip = $"iControl Print · {title}";
+        var tip = $"iControl Monitor · {title}";
         _tray.Text = tip.Length > 63 ? tip[..63] : tip;
 
         _testMenu.DropDownItems.Clear();
@@ -191,7 +191,7 @@ sealed class MonitorContext : ApplicationContext
 
         var nowOnline = reachable && online;
         if (!_first && _wasOnline == true && !nowOnline)
-            _tray.ShowBalloonTip(8000, "iControl Print offline", reachable ? "Sem conexão com o iControl Food. Confira a internet." : "O serviço de impressão parou.", ToolTipIcon.Warning);
+            _tray.ShowBalloonTip(8000, "iControl Monitor offline", reachable ? "Sem conexão com o iControl Food. Confira a internet." : "O serviço de impressão parou.", ToolTipIcon.Warning);
         _wasOnline = nowOnline;
     }
 
@@ -220,9 +220,9 @@ sealed class MonitorContext : ApplicationContext
         if (r is null)
         {
             try { Process.Start(new ProcessStartInfo("sc.exe", "start iControlPrint") { Verb = "runas", UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden }); }
-            catch { MessageBox.Show("Não foi possível iniciar o serviço.", "iControl Print", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
+            catch { MessageBox.Show("Não foi possível iniciar o serviço.", "iControl Monitor", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
         }
-        _tray.ShowBalloonTip(3000, "iControl Print", "Reiniciando o serviço...", ToolTipIcon.Info);
+        _tray.ShowBalloonTip(3000, "iControl Monitor", "Reiniciando o serviço...", ToolTipIcon.Info);
     }
 
     public void OpenLogs() { try { Process.Start(new ProcessStartInfo("explorer.exe", $"\"{Paths.Logs}\"") { UseShellExecute = true }); } catch { } }
@@ -304,7 +304,7 @@ sealed class StatusForm : Form
     public StatusForm(MonitorContext ctx)
     {
         _ctx = ctx;
-        Text = "iControl Print Monitor";
+        Text = "iControl Monitor";
         Icon = Icons.Normal;
         StartPosition = FormStartPosition.CenterScreen;
         Size = new Size(780, 560); MinimumSize = new Size(600, 440);
@@ -340,6 +340,7 @@ sealed class StatusForm : Form
         Add("Abrir pasta dos PDFs", _ctx.OpenPdf);
         Add("Parear de novo / Trocar empresa", _ctx.Pair);
         Add("Verificar atualização", _ctx.CheckUpdate);
+        Add("WhatsApp (QR Code)", ShowWhatsApp);
 
         Controls.Add(tabs); Controls.Add(buttons);
         FormClosing += (_, e) => { if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
@@ -348,7 +349,7 @@ sealed class StatusForm : Form
     JsonObject? SelectedTarget(out bool general)
     {
         general = false;
-        if (_islands.SelectedItems.Count == 0) { MessageBox.Show("Selecione uma ilha ou a impressora geral.", "iControl Print"); return null; }
+        if (_islands.SelectedItems.Count == 0) { MessageBox.Show("Selecione uma ilha ou a impressora geral.", "iControl Monitor"); return null; }
         var tag = _islands.SelectedItems[0].Tag as JsonObject;
         general = tag is null;
         return tag;
@@ -360,8 +361,30 @@ sealed class StatusForm : Form
         if (t is null && !general) return;
         var o = t ?? MonitorContext.General(_ctx.Status);
         var printer = o["printer_name"]?.ToString() ?? "";
-        if (printer.Length == 0) { MessageBox.Show("Defina a impressora antes de testar.", "iControl Print"); return; }
+        if (printer.Length == 0) { MessageBox.Show("Defina a impressora antes de testar.", "iControl Monitor"); return; }
         _ctx.Test(printer, o["print_mode"]?.ToString() ?? "auto", MonitorContext.Paper(o, MonitorContext.DefaultPaper(_ctx.Status)), general ? "Impressora geral" : $"Ilha {o["name"]}");
+    }
+
+    string _waStatus = "", _waQr = "";
+
+    // QR Code do WhatsApp (o mesmo aparece no sistema, em Configurações > WhatsApp)
+    void ShowWhatsApp()
+    {
+        if (_waQr.Length == 0)
+        {
+            MessageBox.Show(_waStatus.StartsWith("conectado") ? $"WhatsApp {_waStatus}." :
+                "Sem QR Code agora. Ligue o WhatsApp no sistema (Configurações > WhatsApp) e escolha este computador.", "iControl Monitor");
+            return;
+        }
+        using var gen = new QRCoder.QRCodeGenerator();
+        using var qd = gen.CreateQrCode(_waQr, QRCoder.QRCodeGenerator.ECCLevel.L);
+        var png = new QRCoder.PngByteQRCode(qd).GetGraphic(6);
+        using var ms = new MemoryStream(png);
+        using var img = Image.FromStream(ms);
+        using var f = new Form { Text = "WhatsApp: leia com o celular do restaurante", StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, ClientSize = new Size(380, 430), Icon = Icons.Normal };
+        f.Controls.Add(new PictureBox { Image = new Bitmap(img), SizeMode = PictureBoxSizeMode.Zoom, Left = 20, Top = 10, Width = 340, Height = 340 });
+        f.Controls.Add(new Label { Left = 20, Top = 355, Width = 340, Height = 70, Text = "No celular: WhatsApp > Aparelhos conectados > Conectar um aparelho. O código muda a cada 20 segundos: se expirar, feche e abra de novo." });
+        f.ShowDialog(this);
     }
 
     static string ModeLabel(string? m) => m switch { "raw" => "Direto", "driver" => "Driver", _ => "Automático" };
@@ -370,7 +393,7 @@ sealed class StatusForm : Form
     {
         if (IsDisposed) return;
         _title.Text = title;
-        if (s?["ok"]?.GetValue<bool>() != true) { _info.Text = "O serviço iControl Print não está respondendo. Clique em Reiniciar serviço."; return; }
+        if (s?["ok"]?.GetValue<bool>() != true) { _info.Text = "O serviço iControl Monitor não está respondendo. Clique em Reiniciar serviço."; return; }
         string V(string k) => s[k]?.ToString() ?? "";
         var sb = new StringBuilder();
         if (V("cnpj").Length > 0) sb.AppendLine($"Empresa: {V("company")} · CNPJ {V("cnpj")}");
@@ -381,6 +404,8 @@ sealed class StatusForm : Form
         if (V("last_file").Length > 0) sb.AppendLine($"Último PDF: {V("last_file")}");
         if (V("last_heartbeat_error").Length > 0) sb.AppendLine($"Conexão: {V("last_heartbeat_error")}");
         if (V("update_status").Length > 0) sb.AppendLine($"Atualização: {V("update_status")}");
+        _waStatus = V("whatsapp"); _waQr = V("whatsapp_qr");
+        sb.AppendLine($"WhatsApp: {(_waStatus.Length > 0 ? _waStatus.Replace("_", " ") : "desligado")}");
         sb.Append($"Computador: {V("machine")}");
         _info.Text = sb.ToString();
 

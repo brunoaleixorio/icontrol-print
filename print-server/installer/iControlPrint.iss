@@ -1,4 +1,6 @@
-; Instalador do iControl Print (Inno Setup 6).
+; Instalador do iControl Monitor (antigo iControl Print) (Inno Setup 6).
+; Nome novo só no que aparece para o usuário: serviço (iControlPrint), executável, pasta e AppId continuam os mesmos,
+; para as instalações atuais atualizarem no lugar, sem perder pareamento nem configuração.
 ; Compilar: iscc /DMyAppVersion=1.0.0 /DPublishDir=..\publish iControlPrint.iss
 #ifndef MyAppVersion
   #define MyAppVersion "1.0.0"
@@ -6,7 +8,7 @@
 #ifndef PublishDir
   #define PublishDir "..\publish"
 #endif
-#define MyAppName "iControl Print"
+#define MyAppName "iControl Monitor"
 #define MyExe "IControlPrint.exe"
 #define MyService "iControlPrint"
 #define MyMonitor "IControlPrintMonitor.exe"
@@ -24,7 +26,7 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=output
-OutputBaseFilename=iControlPrint-Setup-{#MyAppVersion}
+OutputBaseFilename=iControlMonitor-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -41,22 +43,33 @@ Source: "{#PublishDir}\{#MyExe}"; DestDir: "{app}"; Flags: ignoreversion
 ; mesmo executável como Monitor da bandeja (o Inno guarda uma cópia só). Em atualização silenciosa com o Monitor aberto,
 ; o arquivo é trocado no próximo reinício do Windows.
 Source: "{#PublishDir}\{#MyExe}"; DestDir: "{app}"; DestName: "{#MyMonitor}"; Flags: ignoreversion restartreplace
+; módulo do WhatsApp (Node + Baileys), iniciado pelo serviço só quando o WhatsApp está ligado no sistema
+Source: "{#PublishDir}\icontrol-whatsapp.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+
+[UninstallDelete]
+; sessão do WhatsApp deste computador
+Type: filesandordirs; Name: "{commonappdata}\iControlPrint\whatsapp"
 
 [Dirs]
 ; PDFs das impressoras de arquivo (Microsoft Print to PDF/XPS) no modo Driver
 Name: "C:\iControlPrint\PDF"; Permissions: users-modify
 
 [Icons]
-Name: "{autoprograms}\iControl Print Monitor"; Filename: "{app}\{#MyMonitor}"; Parameters: "--monitor --show"; Comment: "Situação da impressão, ilhas e testes"
-Name: "{autoprograms}\Pasta dos PDFs do iControl Print"; Filename: "C:\iControlPrint\PDF"
+Name: "{autoprograms}\iControl Monitor"; Filename: "{app}\{#MyMonitor}"; Parameters: "--monitor --show"; Comment: "Situação da impressão, ilhas, WhatsApp e testes"
+Name: "{autoprograms}\Pasta dos PDFs do iControl Monitor"; Filename: "C:\iControlPrint\PDF"
+
+[InstallDelete]
+; atalhos com o nome antigo (iControl Print)
+Type: files; Name: "{autoprograms}\iControl Print Monitor.lnk"
+Type: files; Name: "{autoprograms}\Pasta dos PDFs do iControl Print.lnk"
 
 [Registry]
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "iControlPrintMonitor"; ValueData: """{app}\{#MyMonitor}"" --monitor"; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{sys}\sc.exe"; Parameters: "create {#MyService} binPath= ""\""{app}\{#MyExe}\"""" start= auto DisplayName= ""iControl Print"""; Flags: runhidden waituntilterminated
-Filename: "{sys}\sc.exe"; Parameters: "config {#MyService} binPath= ""\""{app}\{#MyExe}\"""" start= auto"; Flags: runhidden waituntilterminated
-Filename: "{sys}\sc.exe"; Parameters: "description {#MyService} ""Servidor de impressão do iControl Food: imprime os pedidos nas ilhas (cozinha, bar, caixa)."""; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "create {#MyService} binPath= ""\""{app}\{#MyExe}\"""" start= auto DisplayName= ""iControl Monitor"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "config {#MyService} binPath= ""\""{app}\{#MyExe}\"""" start= auto DisplayName= ""iControl Monitor"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "description {#MyService} ""iControl Monitor do iControl Food: imprime os pedidos nas ilhas (cozinha, bar, caixa) e envia os avisos de pedido pelo WhatsApp."""; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "failure {#MyService} reset= 86400 actions= restart/5000/restart/10000/restart/30000"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "failureflag {#MyService} 1"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "start {#MyService}"; Flags: runhidden waituntilterminated
@@ -166,6 +179,8 @@ var
 begin
   // atualização: para o serviço antes de trocar o executável
   Exec(ExpandConstant('{sys}\sc.exe'), 'stop {#MyService}', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  // módulo do WhatsApp (processo filho do serviço) libera o arquivo
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM icontrol-whatsapp.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
   // instalação com tela: fecha o Monitor para trocar o arquivo (na silenciosa, o restartreplace resolve)
   if not WizardSilent then
     Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyMonitor}', '', SW_HIDE, ewWaitUntilTerminated, Code);
@@ -189,6 +204,6 @@ end;
 function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo, MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
 begin
   Result := 'Empresa: ' + PairedCompany + NewLine + NewLine +
-            'O iControl Print será instalado como serviço do Windows: inicia com o computador, sem precisar de login, e reinicia sozinho em caso de falha.' + NewLine + NewLine +
-            'O iControl Print Monitor fica na bandeja (perto do relógio) para ver a situação, imprimir teste e parear de novo.';
+            'O iControl Monitor será instalado como serviço do Windows: inicia com o computador, sem precisar de login, e reinicia sozinho em caso de falha.' + NewLine + NewLine +
+            'O ícone do iControl Monitor fica na bandeja (perto do relógio) para ver a situação, imprimir teste e parear de novo.';
 end;

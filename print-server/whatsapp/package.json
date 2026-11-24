@@ -1,0 +1,19 @@
+{
+  "name": "icontrol-whatsapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ponte de WhatsApp (sessão por QR Code) do iControl Monitor. Conversa com o serviço por linhas JSON no stdin/stdout.",
+  "main": "index.js",
+  "scripts": {
+    "bundle": "esbuild index.js --bundle --platform=node --target=node20 --outfile=dist/bundle.js --external:sharp --external:jimp --external:link-preview-js --external:qrcode-terminal --external:audio-decode",
+    "exe": "pkg dist/bundle.js --targets node20-win-x64 --output dist/icontrol-whatsapp.exe --compress GZip"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "6.7.18",
+    "pino": "9.6.0"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "6.3.2",
+    "esbuild": "0.25.0"
+  }
+}

@@ -1,4 +1,4 @@
-name: iControl Print (servidor de impressão)
+name: iControl Monitor (impressão e WhatsApp)
 
 # Gera o instalador a cada versão (tag print-vX.Y.Z ou manual em Actions) e publica na Release do GitHub,
 # que é o endereço de download e de atualização automática.
@@ -33,7 +33,7 @@ jobs:
           $v = "${{ github.event.inputs.version }}"
           if (-not $v) { $v = "${{ github.ref_name }}" -replace '^print-v','' }
           "version=$v" >> $env:GITHUB_OUTPUT
-          "file=print-server/installer/output/iControlPrint-Setup-$v.exe" >> $env:GITHUB_OUTPUT
+          "file=print-server/installer/output/iControlMonitor-Setup-$v.exe" >> $env:GITHUB_OUTPUT
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -41,6 +41,20 @@ jobs:
 
       - name: Publicar (self-contained, win-x64, arquivo único)
         run: dotnet publish print-server/src/IControlPrint/IControlPrint.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:Version=${{ steps.v.outputs.version }} -o print-server/publish
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # módulo do WhatsApp (Baileys) num executável único, ao lado do serviço
+      - name: Módulo do WhatsApp
+        shell: pwsh
+        working-directory: print-server/whatsapp
+        run: |
+          npm ci --no-audit --no-fund
+          npm run bundle
+          npm run exe
+          Copy-Item dist/icontrol-whatsapp.exe ../publish/icontrol-whatsapp.exe
 
       - name: Inno Setup
         shell: pwsh
@@ -60,14 +74,14 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: iControlPrint-Setup-${{ steps.v.outputs.version }}
+          name: iControlMonitor-Setup-${{ steps.v.outputs.version }}
           path: ${{ steps.v.outputs.file }}
 
       - name: Release do GitHub
         uses: softprops/action-gh-release@v2
         with:
           tag_name: print-v${{ steps.v.outputs.version }}
-          name: iControl Print ${{ steps.v.outputs.version }}
+          name: iControl Monitor ${{ steps.v.outputs.version }}
           files: ${{ steps.v.outputs.file }}
           body: "SHA-256: ${{ steps.sha.outputs.sha }}"
 
@@ -79,14 +93,14 @@ jobs:
           SUPABASE_URL: https://lamqcfkzsyeyerqbowck.supabase.co
         run: |
           $v = "${{ steps.v.outputs.version }}"
-          $body = @{ version = $v; url = "$env:DOWNLOAD_BASE/print-v$v/iControlPrint-Setup-$v.exe"; sha256 = "${{ steps.sha.outputs.sha }}"; size_bytes = [int64]"${{ steps.sha.outputs.size }}"; active = $true } | ConvertTo-Json
+          $body = @{ version = $v; url = "$env:DOWNLOAD_BASE/print-v$v/iControlMonitor-Setup-$v.exe"; sha256 = "${{ steps.sha.outputs.sha }}"; size_bytes = [int64]"${{ steps.sha.outputs.size }}"; active = $true } | ConvertTo-Json
           Invoke-RestMethod -Method Post -Uri "$env:SUPABASE_URL/rest/v1/print_server_releases?on_conflict=version" -Body $body -ContentType "application/json" `
             -Headers @{ apikey = $env:SUPABASE_SERVICE_ROLE_KEY; Prefer = "resolution=merge-duplicates" }
 
       - name: Resumo
         shell: pwsh
         run: |
-          "### iControl Print ${{ steps.v.outputs.version }}" >> $env:GITHUB_STEP_SUMMARY
-          "- Download: ${{ env.DOWNLOAD_BASE }}/print-v${{ steps.v.outputs.version }}/iControlPrint-Setup-${{ steps.v.outputs.version }}.exe" >> $env:GITHUB_STEP_SUMMARY
+          "### iControl Monitor ${{ steps.v.outputs.version }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Download: ${{ env.DOWNLOAD_BASE }}/print-v${{ steps.v.outputs.version }}/iControlMonitor-Setup-${{ steps.v.outputs.version }}.exe" >> $env:GITHUB_STEP_SUMMARY
           "- SHA-256: ${{ steps.sha.outputs.sha }}" >> $env:GITHUB_STEP_SUMMARY
           "- Tamanho: ${{ steps.sha.outputs.size }} bytes" >> $env:GITHUB_STEP_SUMMARY
