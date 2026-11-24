@@ -26,6 +26,10 @@ public sealed class Updater(ILogger<Updater> log)
         var sha = (rel["sha256"]?.GetValue<string>() ?? "").Trim().ToLowerInvariant();
         if (!Version.TryParse(version, out var remote) || !Version.TryParse(AppInfo.Version, out var local) || remote <= local) { Status = $"Versão {AppInfo.Version} é a mais nova"; return; }
         if (_tried == version && !force) return; // já tentou esta versão: não fica em loop se a instalação falhar
+        // instalador já rodando (ex.: "Verificar atualização" durante a atualização automática): não baixa de novo por cima
+        if (Process.GetProcesses().Any(p => p.ProcessName.StartsWith("iControlMonitor-Setup", StringComparison.OrdinalIgnoreCase)
+                                          || p.ProcessName.StartsWith("iControlPrint-Setup", StringComparison.OrdinalIgnoreCase)))
+        { Status = $"Instalando a versão {version}... aguarde um minuto."; return; }
         // só do nosso domínio e sempre com SHA-256
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
             || !uri.Host.Equals(AllowedHost, StringComparison.OrdinalIgnoreCase) || !uri.AbsolutePath.StartsWith(AllowedPath))
@@ -38,7 +42,7 @@ public sealed class Updater(ILogger<Updater> log)
         {
             log.LogInformation("Atualizando de {L} para {R}", AppInfo.Version, version);
             Status = $"Atualizando para {version}...";
-            var file = Path.Combine(Paths.Updates, $"iControlPrint-Setup-{version}.exe");
+            var file = Path.Combine(Paths.Updates, $"iControlMonitor-Setup-{version}.exe");
             await using (var s = await Http.GetStreamAsync(url, ct))
             await using (var f = File.Create(file)) await s.CopyToAsync(f, ct);
             {

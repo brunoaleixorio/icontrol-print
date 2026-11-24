@@ -40,8 +40,8 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 
 [Files]
 Source: "{#PublishDir}\{#MyExe}"; DestDir: "{app}"; Flags: ignoreversion
-; mesmo executável como Monitor da bandeja (o Inno guarda uma cópia só). Em atualização silenciosa com o Monitor aberto,
-; o arquivo é trocado no próximo reinício do Windows.
+; mesmo executável como Monitor da bandeja (o Inno guarda uma cópia só). O Monitor é fechado antes de copiar
+; (PrepareToInstall); o restartreplace fica só de reserva, se ainda assim o arquivo estiver preso.
 Source: "{#PublishDir}\{#MyExe}"; DestDir: "{app}"; DestName: "{#MyMonitor}"; Flags: ignoreversion restartreplace
 ; módulo do WhatsApp (Node + Baileys), iniciado pelo serviço só quando o WhatsApp está ligado no sistema
 Source: "{#PublishDir}\icontrol-whatsapp.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
@@ -57,6 +57,8 @@ Name: "C:\iControlPrint\PDF"; Permissions: users-modify
 [Icons]
 Name: "{autoprograms}\iControl Monitor"; Filename: "{app}\{#MyMonitor}"; Parameters: "--monitor --show"; Comment: "Situação da impressão, ilhas, WhatsApp e testes"
 Name: "{autoprograms}\Pasta dos PDFs do iControl Monitor"; Filename: "C:\iControlPrint\PDF"
+; atalho na área de trabalho (de todos os usuários), também nas atualizações
+Name: "{autodesktop}\iControl Monitor"; Filename: "{app}\{#MyMonitor}"; Parameters: "--monitor --show"; Comment: "Situação da impressão, ilhas, WhatsApp e testes"
 
 [InstallDelete]
 ; atalhos com o nome antigo (iControl Print)
@@ -64,6 +66,7 @@ Type: files; Name: "{autoprograms}\iControl Print Monitor.lnk"
 Type: files; Name: "{autoprograms}\Pasta dos PDFs do iControl Print.lnk"
 
 [Registry]
+; Monitor da bandeja inicia junto com o Windows para todos os usuários (o serviço já inicia sozinho, sem login)
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "iControlPrintMonitor"; ValueData: """{app}\{#MyMonitor}"" --monitor"; Flags: uninsdeletevalue
 
 [Run]
@@ -78,6 +81,7 @@ Filename: "{app}\{#MyMonitor}"; Parameters: "--monitor --show"; Flags: nowait ru
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#MyMonitor}"; Flags: runhidden waituntilterminated; RunOnceId: "KillMonitor"
+Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""iControl Monitor"" /f"; Flags: runhidden waituntilterminated; RunOnceId: "DelTask"
 Filename: "{app}\{#MyExe}"; Parameters: "--unpair"; Flags: runhidden waituntilterminated; RunOnceId: "Unpair"
 Filename: "{sys}\sc.exe"; Parameters: "stop {#MyService}"; Flags: runhidden waituntilterminated; RunOnceId: "StopSvc"
 Filename: "{sys}\sc.exe"; Parameters: "delete {#MyService}"; Flags: runhidden waituntilterminated; RunOnceId: "DelSvc"
@@ -181,15 +185,37 @@ begin
   Exec(ExpandConstant('{sys}\sc.exe'), 'stop {#MyService}', '', SW_HIDE, ewWaitUntilTerminated, Code);
   // módulo do WhatsApp (processo filho do serviço) libera o arquivo
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM icontrol-whatsapp.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  // instalação com tela: fecha o Monitor para trocar o arquivo (na silenciosa, o restartreplace resolve)
-  if not WizardSilent then
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyMonitor}', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  // fecha o Monitor da bandeja para trocar o arquivo já (antes, na atualização silenciosa, só trocava ao reiniciar o Windows);
+  // no fim ele é aberto de novo na sessão de quem está logado
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyMonitor}', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Sleep(2500);
   Result := '';
 end;
 
+// Atualização automática roda como SYSTEM (pelo serviço), sem tela: quem abre o Monitor de novo para o usuário é uma
+// tarefa agendada do grupo Usuários (abre na sessão de cada usuário logado). XML em ASCII e sem declaração (o schtasks
+// recusa UTF-8 declarado).
+procedure ReopenMonitor;
+var
+  Xml, XmlFile: String;
+  Code: Integer;
+begin
+  XmlFile := ExpandConstant('{tmp}\icontrol-monitor-task.xml');
+  Xml :=
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' +
+    '<Principals><Principal id="Author"><GroupId>S-1-5-32-545</GroupId><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>' +
+    '<Settings><MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>' +
+    '<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowStartOnDemand>true</AllowStartOnDemand><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>' +
+    '<Actions Context="Author"><Exec><Command>"' + ExpandConstant('{app}\{#MyMonitor}') + '"</Command><Arguments>--monitor</Arguments></Exec></Actions>' +
+    '</Task>';
+  if not SaveStringToFile(XmlFile, Xml, False) then Exit;
+  if Exec(ExpandConstant('{sys}\schtasks.exe'), '/create /tn "iControl Monitor" /xml "' + XmlFile + '" /f', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/run /tn "iControl Monitor"', '', SW_HIDE, ewWaitUntilTerminated, Code);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if (CurStep = ssPostInstall) and WizardSilent then ReopenMonitor;
   if CurStep = ssDone then Installed := True;
 end;
 
