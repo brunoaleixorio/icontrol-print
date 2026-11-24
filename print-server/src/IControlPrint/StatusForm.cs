@@ -92,6 +92,7 @@ sealed class StatusForm : Form
         var head = new Panel { Dock = DockStyle.Top, Height = 74, BackColor = Brand.Purple, Padding = new Padding(18, 12, 18, 12) };
         head.Paint += (_, e) =>
         {
+            if (head.ClientRectangle.Width <= 0 || head.ClientRectangle.Height <= 0) return; // janela minimizada/abrindo: gradiente não aceita largura 0
             using var br = new System.Drawing.Drawing2D.LinearGradientBrush(head.ClientRectangle, Brand.Purple, Brand.Teal, 0f);
             e.Graphics.FillRectangle(br, head.ClientRectangle);
         };

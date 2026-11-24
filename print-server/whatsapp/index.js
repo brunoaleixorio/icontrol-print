@@ -111,7 +111,7 @@ async function start() {
         if (!body) continue;
         const who = phoneOf(m.key);
         if (!who) continue;
-        out({ ev: "inbound", from: who.phone, name: m.key.fromMe ? "" : (m.pushName || ""), text: body.text, type: body.type, from_me: !!m.key.fromMe });
+        out({ ev: "inbound", from: who.phone, lid: who.jid.endsWith("@lid"), name: m.key.fromMe ? "" : (m.pushName || ""), text: body.text, type: body.type, from_me: !!m.key.fromMe });
       } catch { /* ignora mensagem que não deu para ler */ }
     }
   });
@@ -123,7 +123,8 @@ async function send({ id, phone, text }) {
   try {
     if (!connected || !sock) throw new Error("WhatsApp não conectado");
     const digits = String(phone || "").replace(/\D/g, "");
-    let jid = lidJids.get(digits);
+    // contato só por LID (o WhatsApp esconde o número): responde pelo próprio identificador, mesmo depois de reiniciar
+    let jid = lidJids.get(digits) || (digits.length >= 14 ? digits + "@lid" : null);
     if (!jid) {
       const [info] = await sock.onWhatsApp(digits);
       if (!info?.exists) throw new Error("Este número não tem WhatsApp");

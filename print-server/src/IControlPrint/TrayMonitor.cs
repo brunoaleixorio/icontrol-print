@@ -170,7 +170,8 @@ sealed class MonitorContext : ApplicationContext
         if (!_first && key.Length > 0 && key != _lastErrorKey)
         {
             _lastErrorAt = DateTime.Now;
-            _tray.ShowBalloonTip(8000, "Falha na impressão", $"{top!["title"]}: {top["message"]}", ToolTipIcon.Error);
+            var isWa = top!["title"]?.ToString() == "WhatsApp";
+            _tray.ShowBalloonTip(8000, isWa ? "Falha no WhatsApp" : "Falha na impressão", $"{top["title"]}: {top["message"]}", ToolTipIcon.Error);
         }
         _lastErrorKey = key;
 
